@@ -12,7 +12,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 import argparse
+from dataclasses import dataclass
+from typing import Literal, TypedDict
 import warnings
 
 import torch
@@ -33,6 +36,9 @@ from transformers import get_scheduler
 from torch.optim import Optimizer
 from mutransformers import BertConfig, BertForSequenceClassification
 from mup import make_base_shapes, set_base_shapes, MuAdamW
+import warnings
+
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 ########################################################################
 # This is a fully working simple example to use Accelerate
@@ -132,7 +138,7 @@ def get_model(target_config: BertConfig) -> BertForSequenceClassification:
         num_attention_heads=16,
         # num_labels=5,
     )
-    base_model = model_class(target_config)
+    base_model = model_class(base_config)
 
     # OK seems like I'm making some progress.
 
@@ -167,18 +173,20 @@ def get_model(target_config: BertConfig) -> BertForSequenceClassification:
 
     # re-initialize
     target_model.apply(target_model._init_weights)
-
+    print(f"Total parameters in the base model:   {base_model.num_parameters()}")
+    print(f"Total parameters in the delta model:  {delta_model.num_parameters()}")
+    print(f"Total parameters in the target model: {target_model.num_parameters()}")
     return target_model
 
 
-def training_function(config, args):
+def training_function(hparams: HParams, config: Config):
     # Initialize accelerator
-    accelerator = Accelerator(cpu=args.cpu, mixed_precision=args.mixed_precision)
+    accelerator = Accelerator(cpu=config.cpu, mixed_precision=config.mixed_precision)
     # Sample hyper-parameters for learning rate, batch size, seed and a few other HPs
-    lr = config["lr"]
-    num_epochs = int(config["num_epochs"])
-    seed = int(config["seed"])
-    batch_size = int(config["batch_size"])
+    lr = hparams.lr
+    num_epochs = hparams.num_epochs
+    seed = hparams.seed
+    batch_size = hparams.batch_size
 
     eval_metric = evaluate.load("glue", "mrpc")
 
@@ -209,13 +217,12 @@ def training_function(config, args):
 
     small_config = replace(
         default_config,
-        # hidden_size=64,
-        # intermediate_size=128,
-        # num_attention_heads=4,
+        hidden_size=64,
+        intermediate_size=128,
+        num_attention_heads=4,
         # num_labels=2,  # TODO: This is specific to this particular dataset.
     )
     model = get_model(small_config)
-
     # We could avoid this line since the accelerator is set with `device_placement=True` (default value).
     # Note that if you are placing tensors on devices manually, this line absolutely needs to be before the optimizer
     # creation otherwise training will not work on TPU (`accelerate` will kindly throw an error to make us aware of that).
@@ -318,23 +325,36 @@ def training_function(config, args):
         )
 
 
+@dataclass
+class Config:
+    mixed_precision: Literal["no", "fp16", "bf16"] = "no"
+    """Whether to use mixed precision. Choose between fp16 and bf16 (bfloat16).
+    Bf16 requires PyTorch >= 1.10 and an Nvidia Ampere GPU.
+    """
+
+    cpu: bool = False
+    """If passed, will train on the CPU."""
+
+
+@dataclass
+class HParams:
+    lr: float = 2e-5
+    num_epochs: int = 3
+    seed: int = 42
+    batch_size: int = 128
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Simple example of training script.")
-    parser.add_argument(
-        "--mixed_precision",
-        type=str,
-        default="no",
-        choices=["no", "fp16", "bf16"],
-        help="Whether to use mixed precision. Choose"
-        "between fp16 and bf16 (bfloat16). Bf16 requires PyTorch >= 1.10."
-        "and an Nvidia Ampere GPU.",
+    import simple_parsing
+
+    parser = simple_parsing.ArgumentParser(
+        description="Simple example of training script."
     )
-    parser.add_argument(
-        "--cpu", action="store_true", help="If passed, will train on the CPU."
-    )
+    parser.add_arguments(Config, dest="config")
     args = parser.parse_args()
-    config = {"lr": 2e-5, "num_epochs": 3, "seed": 12, "batch_size": 128}
-    training_function(config, args)
+    config: Config = args.config
+    hparams = HParams()
+    training_function(hparams, config)
 
 
 if __name__ == "__main__":
