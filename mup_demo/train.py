@@ -1,36 +1,40 @@
 from __future__ import annotations
 from dataclasses import dataclass
 import dataclasses
+import pickle
 import random
-from typing import TypedDict, Union
+from typing import TypedDict
 from mutransformers import BertConfig, BertForSequenceClassification
 from mup import make_base_shapes, set_base_shapes, MuAdamW
-from datasets import DatasetDict, load_dataset
 from dataclasses import field
 import functools
 import os
-from transformers import AutoTokenizer
+import accelerate
 import numpy as np
-from transformers import BatchEncoding
 from torch.utils.data import DataLoader
-from transformers import AutoTokenizer
 from torch.utils.data import DataLoader
 from transformers import get_scheduler
 import torch
 from transformers.modeling_outputs import SequenceClassifierOutput
-from transformers import AutoTokenizer
 from tqdm import tqdm
-from torch.utils.data import Dataset
 from torch import Tensor
 import numpy as np
 from orion.client import build_experiment
 import yaml
 from orion.core.worker.trial import Trial
-from simple_parsing.helpers.hparams import HyperParameters, log_uniform
+from simple_parsing.helpers.hparams.hyperparameters import HyperParameters
+from simple_parsing.helpers.hparams.hparam import log_uniform
 from pathlib import Path
 from torch.optim import Optimizer
 from torch.nn.parallel import DistributedDataParallel as DDP
 import json
+from mup_demo.data import YelpDataModule
+from accelerate import Accelerator
+from orion.client.experiment import TrialCM
+from mup_demo.utils import suggest_trial
+from accelerate.accelerator import AcceleratedOptimizer, AcceleratedScheduler
+from torch.optim.lr_scheduler import _LRScheduler as LRScheduler
+from torch.optim import AdamW
 
 
 def get_model(target_config: BertConfig) -> BertForSequenceClassification:
@@ -85,23 +89,6 @@ def get_model(target_config: BertConfig) -> BertForSequenceClassification:
     return target_model
 
 
-class Batch(TypedDict):
-    labels: torch.Tensor
-    input_ids: torch.Tensor
-    token_type_ids: torch.Tensor
-    attention_mask: torch.Tensor
-
-
-# NOTE: Making the tokenizer global, so that the dataset can be cached.
-# Doesn't seem to work, since the datasets are re-processed each time..
-# If the tokenizer function is a method, then it seems to change the hash, which prevents caching.
-tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
-
-
-def tokenize_function(examples: dict) -> BatchEncoding:
-    return tokenizer(examples["text"], padding="max_length", truncation=True)
-
-
 # TODO: Can't get this to work.
 # def compute_metrics(eval_preds):
 #     metric = evaluate.load("accuracy")
@@ -113,6 +100,19 @@ def tokenize_function(examples: dict) -> BatchEncoding:
 #         # predictions=predictions,
 #         average="macro",
 #     )
+
+
+class EpochMetrics(TypedDict):
+    n: int
+    loss: float
+    accuracy: float
+
+
+class Batch(TypedDict):
+    labels: torch.Tensor
+    input_ids: torch.Tensor
+    token_type_ids: torch.Tensor
+    attention_mask: torch.Tensor
 
 
 @dataclass
@@ -141,10 +141,16 @@ class Config:
 
     random_seed: int = 42
 
+    @property
+    def sweep_dir(self) -> Path:
+        return self.log_dir.parent
 
-def get_optimizer(model: BertForSequenceClassification, hparams: HParams):
+
+def get_optimizer(model: BertForSequenceClassification, hparams: HParams) -> AdamW:
     # make sure to use mup optimizers for training
-    return MuAdamW(model.parameters(), lr=hparams.learning_rate)
+    optim = MuAdamW(model.parameters(), lr=hparams.learning_rate)
+    assert isinstance(optim, AdamW)
+    return optim
 
 
 def get_lr_scheduler(
@@ -161,61 +167,6 @@ def get_lr_scheduler(
     return lr_scheduler
 
 
-class YelpDataModule:
-    def __init__(self, batch_size: int, config: Config):
-        self.config = config
-        self.batch_size = batch_size
-        self.train_dataset: Dataset | None = None
-        self.test_dataset: Dataset | None = None
-
-    def prepare_data(self):
-        # Runs only on the first worker.
-        dataset = load_dataset("yelp_review_full")
-        assert isinstance(dataset, DatasetDict)
-        # self.tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
-        tokenized_datasets = (
-            dataset.map(
-                tokenize_function,
-                batched=True,
-                load_from_cache_file=True,
-                # NOTE: This is hard-coded, because the caching isn't working.
-                cache_file_names={"train": "train_cached", "test": "test_cached"},
-            )
-            .remove_columns(["text"])
-            .rename_column("label", "labels")
-        )
-        tokenized_datasets.set_format("torch")
-
-        train_dataset = tokenized_datasets["train"]
-        test_dataset = tokenized_datasets["test"]
-        if self.config.max_train_samples:
-            train_dataset = train_dataset.select(range(self.config.max_train_samples))
-        if self.config.max_test_samples:
-            test_dataset = test_dataset.select(range(self.config.max_test_samples))
-        self.train_dataset = train_dataset
-        self.test_dataset = test_dataset
-
-    def setup(self, stage: str):
-        # Do it "again", but on all workers. This doesn't download anything the second time, but
-        # it does set the `train_dataset` and `test_dataset` attributes on `self` for each worker.
-        self.prepare_data()
-
-    def train_dataloader(self):
-        return DataLoader(
-            self.train_dataset,
-            batch_size=self.batch_size,
-            num_workers=self.config.dataloader_num_workers,
-            shuffle=True,
-        )
-
-    def test_dataloader(self):
-        return DataLoader(
-            self.test_dataset,
-            batch_size=self.batch_size,
-            num_workers=self.config.dataloader_num_workers,
-        )
-
-
 def train(
     hparams: HParams,
     config: Config,
@@ -226,9 +177,11 @@ def train(
     torch.random.manual_seed(config.random_seed)
     torch.cuda.manual_seed_all(config.random_seed)
 
+    accelerator = Accelerator()
+
     config.log_dir.mkdir(parents=True, exist_ok=True)
-    local_rank = int(os.environ.get("RANK", -1))
-    if local_rank in [-1, 0]:
+
+    if accelerator.is_main_process:
         print(f"Running in {config.log_dir}")
         with open(config.log_dir / "config.yaml", "w") as f:
             yaml.dump({"config": config, "hparams": hparams}, f)
@@ -236,28 +189,27 @@ def train(
     model = get_model(hparams.model)
     datamodule = YelpDataModule(batch_size=hparams.batch_size, config=config)
 
-    # mimicking a PyTorch Lightning Trainer-like API.
-    datamodule.prepare_data()
+    os.environ["TOKENIZERS_PARALLELISM"] = "true"
+    datamodule.prepare_data(accelerator=accelerator)
     datamodule.setup("fit")
-    train_dataset_length = len(datamodule.train_dataset)
+
+    # accelerator.wait_for_everyone()
 
     train_dataloader = datamodule.train_dataloader()
     test_dataloader = datamodule.test_dataloader()
 
-    optimizer = get_optimizer(model=model, hparams=hparams)
-    lr_scheduler = get_lr_scheduler(
+    optimizer: AdamW | AcceleratedOptimizer = get_optimizer(
+        model=model, hparams=hparams
+    )
+    lr_scheduler: AcceleratedScheduler | LRScheduler = get_lr_scheduler(
         optimizer=optimizer,
-        train_dataset_length=train_dataset_length,
+        train_dataset_length=datamodule.num_train_samples,
         num_epochs=config.num_epochs,
         batch_size=hparams.batch_size,
     )
 
     # TODO: Use the auto_batch_size stuff maybe?
-    # Make sure not to actually change the model state though.
-    # initial_model_state = model.save_pretrained("temp")
-    from accelerate import Accelerator
 
-    accelerator = Accelerator()
     # NOTE: set_base_shapes is causing issues with FSDP, since the weight names don't line up with
     # the model anymore.
     (
@@ -268,7 +220,7 @@ def train(
         lr_scheduler,
     ) = accelerator.prepare(
         train_dataloader, test_dataloader, model, optimizer, lr_scheduler
-    )
+    )  # type: ignore
     model: BertForSequenceClassification | DDP
     train_dataloader: DataLoader
     test_dataloader: DataLoader
@@ -296,10 +248,11 @@ def train(
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
+                progress_bar.set_postfix({"loss": loss.item()})
 
         epoch_metrics = test_epoch(model=model, test_dataloader=test_dataloader)
 
-        if local_rank in [-1, 0]:
+        if accelerator.is_main_process:
             with open(epoch_save_path / "metrics.json", "w") as f:
                 json.dump(epoch_metrics, f)
 
@@ -313,12 +266,6 @@ def train(
         # model.save_pretrained(config.log_dir / f"epoch_{epoch}")
 
     return epoch_metrics
-
-
-class EpochMetrics(TypedDict):
-    loss: float
-    accuracy: float
-    n: int
 
 
 def test_epoch(
@@ -342,14 +289,14 @@ def test_epoch(
     return {"accuracy": accuracy, "loss": total_loss, "n": total}
 
 
-def main():
+def tune():
     """Perform an HPO sweep using smaller transformer models, and extract the best HPO parameters
     found. Then, use those parameters to train a very large model.
     """
     base_log_dir = Path("logs")
     sweep_log_dir = base_log_dir / "test_sweep"
     config = Config(
-        num_epochs=1,
+        num_epochs=3,
         max_train_samples=10_000,
         max_test_samples=1000,
         dataloader_num_workers=4,
@@ -366,48 +313,21 @@ def main():
         max_trials=20,
         working_dir=sweep_log_dir,
     )
-    store = torch.distributed.FileStore("filestore", int(os.environ["WORLD_SIZE"]))
-
-    local_rank = int(os.environ["RANK"])
 
     while not experiment.is_done:
-        # BUG: When using DDP, I'm getting a different trial from experiment.suggest for each
-        # worker!
-        # TODO: Find the trial that was suggested on the master worker (the one with RANK 0)
+        accelerator = Accelerator()
+        trial = suggest_trial(experiment, accelerator=accelerator)
+        print(f"Worker {accelerator.process_index} got hparams: {trial.params}")
+        hparams = HParams(**trial.params)
 
-        # TODO: Perhaps we could use this as part of a filename ?
-        n_completed_trials = experiment.algorithms.n_observed
-        if local_rank == 0:
-            trial = experiment.suggest()
-            trial_params = trial.params
-            trial_id = trial.id
-            log_dir = Path(trial.working_dir)
-
-            # TODO: Somehow serialize the Trial and send it to the other workers.
-            for key, value in trial_params.items():
-                store.set(key, str(value))
-            store.set("log_dir", str(log_dir))
-            store.set("trial_id", trial_id)
-        else:
-            trial_params = {
-                key: float(store.get(key).decode())
-                for key in HParams.get_orion_space_dict()
-            }
-            log_dir = Path(store.get("log_dir").decode())
-            trial_id = store.get("trial_id").decode()
-
-        hparams = HParams(**trial_params)
-        print(f"Worker {local_rank} got learning_rate of {hparams.learning_rate}")
-        print(f"Running trial with hparams: {trial_params}")
-
-        # BUG: STILL getting different values for different workers!!
-
-        config_for_this_trial = dataclasses.replace(config, log_dir=log_dir)
-
+        # Use the 'base' config, but replace the log_dir with the trial's working_dir.
+        config_for_this_trial = dataclasses.replace(
+            config, log_dir=Path(trial.working_dir)
+        )
         metrics = train(hparams, config_for_this_trial)
-        print(f"Trial {trial_id} finished with metrics: {metrics}")
 
-        if local_rank == 0:
+        if accelerator.is_main_process:
+            print(f"Trial {trial.id} finished with metrics: {metrics}")
             experiment.observe(
                 trial,
                 # NOTE: Put the loss as the first objective, so that Orion uses it. Also keep the
@@ -468,4 +388,4 @@ def train_big_model(best_trial: Trial):
 
 
 if __name__ == "__main__":
-    main()
+    tune()
