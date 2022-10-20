@@ -3,6 +3,8 @@ import typing
 from datasets import DatasetDict, DatasetInfo, Features, SplitInfo, load_dataset
 from transformers import AutoTokenizer
 import contextlib
+import evaluate
+from evaluate import EvaluationModule
 from transformers import BatchEncoding
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
@@ -13,7 +15,7 @@ from datasets.load import load_dataset_builder
 from accelerate.accelerator import AcceleratorState
 from accelerate.accelerator import prepare_data_loader
 from accelerate import Accelerator, DistributedType
-
+from datasets.builder import DatasetBuilder
 
 if typing.TYPE_CHECKING:
     from .train import Config
@@ -29,31 +31,29 @@ def tokenize_function(examples: dict) -> BatchEncoding:
 
 
 class TextDataModule:
-    
-
-
-class YelpDataModule:
     def __init__(
         self,
-        config: Config,
+        dataset_name: str,
+        task: str | None = None,
         batch_size: int = 16,
         accelerator: Accelerator | None = None,
     ):
+        self.dataset_name = dataset_name
+        self.task = task
+        self.dataset_name_and_task = (dataset_name, task)
+
         self.batch_size = batch_size
-        self.config = config
         self.accelerator = accelerator
 
-        self.dataset_builder = load_dataset_builder("yelp_review_full")
+        self.dataset_builder: DatasetBuilder = load_dataset_builder(
+            *self.dataset_name_and_task
+        )
         self.train_dataset: Dataset | None = None
         self.test_dataset: Dataset | None = None
 
     @property
     def info(self) -> DatasetInfo:
         return self.dataset_builder.info
-
-    @property
-    def num_labels(self) -> int:
-        return self.features["label"].num_classes
 
     @property
     def features(self) -> Features:
@@ -66,6 +66,34 @@ class YelpDataModule:
         assert self.dataset_builder.info.splits
         splits: dict[str, SplitInfo] = self.dataset_builder.info.splits
         return splits["train"].num_examples
+
+    def make_metric(self) -> EvaluationModule:
+        return evaluate.load(*self.dataset_name_and_task)
+
+
+class YelpDataModule(TextDataModule):
+    def __init__(
+        self,
+        config: Config,
+        batch_size: int = 16,
+        accelerator: Accelerator | None = None,
+    ):
+        super().__init__(
+            dataset_name="yelp_review_full",
+            batch_size=batch_size,
+            accelerator=accelerator,
+        )
+        self.config = config
+
+        self.train_dataset: Dataset | None = None
+        self.test_dataset: Dataset | None = None
+
+    @property
+    def num_labels(self) -> int:
+        return self.features["label"].num_classes
+
+    def make_metric(self) -> EvaluationModule:
+        return evaluate.load("glue", "mrpc")
 
     def prepare_data(self):
         # Runs only on the first worker.
@@ -132,22 +160,31 @@ class YelpDataModule:
         )
 
 
-class GlueDataModule:
+class GlueDataModule(TextDataModule):
     def __init__(
         self,
         accelerator: Accelerator,
         batch_size: int = 16,
         eval_batch_size: int | None = None,
     ):
-        super().__init__()
-        self.batch_size = batch_size
+        super().__init__(
+            dataset_name="glue",
+            task="mrpc",
+            batch_size=batch_size,
+            accelerator=accelerator,
+        )
         self.eval_batch_size = eval_batch_size or batch_size
-        self.accelerator = accelerator
 
-        self.tokenized_datasets = None
+        self.tokenized_datasets: DatasetDict | None = None
+
+        self.train_dataset: Dataset | None = None
+        self.test_dataset: Dataset | None = None
+
+    @property
+    def num_labels(self) -> int:
+        return self.features["label"].num_classes
 
     def prepare_data(self):
-        tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
         datasets = load_dataset("glue", "mrpc")
 
         def tokenize_function(examples):
@@ -211,4 +248,64 @@ class GlueDataModule:
             batch_size=self.eval_batch_size,
         )
 
-        return train_dataloader, eval_dataloader
+
+def get_glue_dataloaders(accelerator: Accelerator, batch_size: int = 16):
+    """
+    Creates a set of `DataLoader`s for the `glue` dataset,
+    using "bert-base-cased" as the tokenizer.
+
+    Args:
+        accelerator (`Accelerator`):
+            An `Accelerator` object
+        batch_size (`int`, *optional*):
+            The batch size for the train and validation DataLoaders.
+    """
+    tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
+    datasets = load_dataset("glue", "mrpc")
+
+    def tokenize_function(examples):
+        # max_length=None => use the model max length (it's actually the default)
+        outputs = tokenizer(
+            examples["sentence1"],
+            examples["sentence2"],
+            truncation=True,
+            max_length=None,
+        )
+        return outputs
+
+    # Apply the method we just defined to all the examples in all the splits of the dataset
+    # starting with the main process first:
+    with accelerator.main_process_first():
+        tokenized_datasets = datasets.map(
+            tokenize_function,
+            batched=True,
+            remove_columns=["idx", "sentence1", "sentence2"],
+        )
+
+    # We also rename the 'label' column to 'labels' which is the expected name for labels by the models of the
+    # transformers library
+    tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
+
+    def collate_fn(examples):
+        # On TPU it's best to pad everything to the same length or training will be very slow.
+        if accelerator.distributed_type == DistributedType.TPU:
+            return tokenizer.pad(
+                examples, padding="max_length", max_length=128, return_tensors="pt"
+            )
+        return tokenizer.pad(examples, padding="longest", return_tensors="pt")
+
+    # Instantiate dataloaders.
+    train_dataloader = DataLoader(
+        tokenized_datasets["train"],  # type: ignore
+        shuffle=True,
+        collate_fn=collate_fn,
+        batch_size=batch_size,
+    )
+    eval_dataloader = DataLoader(
+        tokenized_datasets["validation"],  # type: ignore
+        shuffle=False,
+        collate_fn=collate_fn,
+        batch_size=EVAL_BATCH_SIZE,
+    )
+
+    return train_dataloader, eval_dataloader

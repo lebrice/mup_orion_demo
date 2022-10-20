@@ -29,9 +29,8 @@ def suggest_trial(experiment: ExperimentClient, accelerator: Accelerator) -> Tri
     # print(f"WORKER {local_rank}: Filename: {filename}")
 
     with accelerator.main_process_first():
-        if not filename.exists():
+        if not filename.exists() and local_rank == 0:
             # Main worker!
-            assert local_rank == 0
             trial = experiment.suggest()
             assert isinstance(trial, (TrialCM, Trial))
             if isinstance(trial, TrialCM):
@@ -44,7 +43,9 @@ def suggest_trial(experiment: ExperimentClient, accelerator: Accelerator) -> Tri
                 assert isinstance(trial, Trial)
 
     # Wait for everyone before removing the file.
-    accelerator.wait_for_everyone()
+    torch.distributed.barrier()
+    # accelerator.wait_for_everyone()
+
     if accelerator.is_main_process:
         if filename.exists():
             filename.unlink()

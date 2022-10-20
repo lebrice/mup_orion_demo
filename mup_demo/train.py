@@ -1,374 +1,305 @@
+# coding=utf-8
+# Copyright 2021 The HuggingFace Inc. team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 from __future__ import annotations
 from dataclasses import dataclass
-import dataclasses
-import pickle
-import random
-from typing import TypedDict
-from mutransformers import BertConfig, BertForSequenceClassification
-from mup import make_base_shapes, set_base_shapes, MuAdamW
-from dataclasses import field
-import functools
-import os
-import accelerate
-import numpy as np
-from torch.utils.data import DataLoader
-from torch.utils.data import DataLoader
-from transformers import get_scheduler
-import torch
-from transformers.modeling_outputs import SequenceClassifierOutput
-from tqdm import tqdm
-from torch import Tensor
-import numpy as np
-from orion.client import build_experiment
 import yaml
-from orion.core.worker.trial import Trial
-from simple_parsing.helpers.hparams.hyperparameters import HyperParameters
-from simple_parsing.helpers.hparams.hparam import log_uniform
-from pathlib import Path
-from torch.optim import Optimizer
-from torch.nn.parallel import DistributedDataParallel as DDP
-import json
-from mup_demo.data import YelpDataModule
-from accelerate import Accelerator
-from orion.client.experiment import TrialCM
-from mup_demo.utils import suggest_trial
-from accelerate.accelerator import AcceleratedOptimizer, AcceleratedScheduler
-from torch.optim.lr_scheduler import _LRScheduler as LRScheduler
+import collections
+from typing import Literal
+import warnings
+
+import torch
 from torch.optim import AdamW
-from transformers import set_seed
+from torch.utils.data import DataLoader
+import evaluate
+import tqdm
+from accelerate import Accelerator, DistributedType
+from datasets.load import load_dataset
+from transformers import (
+    AutoTokenizer,
+    get_linear_schedule_with_warmup,
+    set_seed,
+)
+from mutransformers import BertConfig, BertForSequenceClassification
+from mup import MuAdamW
+import warnings
+from mup_demo.model import _replace, get_bert_model
+from accelerate.accelerator import AcceleratedOptimizer, AcceleratedScheduler
+from torch.optim.lr_scheduler import _LRScheduler
+from torch.nn.parallel import DistributedDataParallel as DDP
+from evaluate import EvaluationModule
+from mup_demo.data import GlueDataModule
+from pathlib import Path
+from dataclasses import asdict
 
+warnings.filterwarnings("ignore", category=FutureWarning)
 
-class EpochMetrics(TypedDict):
-    n: int
-    loss: float
-    accuracy: float
+MAX_GPU_BATCH_SIZE = 256
+EVAL_BATCH_SIZE = 32
 
-
-class Batch(TypedDict):
-    labels: torch.Tensor
-    input_ids: torch.Tensor
-    token_type_ids: torch.Tensor
-    attention_mask: torch.Tensor
-
-
-@dataclass
-class HParams(HyperParameters):
-    learning_rate: float = log_uniform(1e-7, 1e-2, default=0.00005)
-    # batch_size: int = log_uniform(4, 128, default=32, base=2, discrete=True)
-    batch_size: int = 128
-    model: BertConfig = field(
-        default_factory=functools.partial(
-            BertConfig,
-            hidden_size=64,
-            intermediate_size=128,
-            num_attention_heads=4,
-            num_labels=5,  # TODO: This is specific to this particular dataset.
-        )
-    )
+from mup_demo.model import HParams
 
 
 @dataclass(frozen=True)
 class Config:
     log_dir: Path = Path("logs")
-    num_epochs: int = 1
     max_train_samples: int | None = 10_000
     max_test_samples: int | None = 1_000
     dataloader_num_workers: int = 4
 
-    random_seed: int = 42
+    mixed_precision: Literal["no", "fp16", "bf16"] = "no"
+    """Whether to use mixed precision. Choose between fp16 and bf16 (bfloat16).
+    Bf16 requires PyTorch >= 1.10 and an Nvidia Ampere GPU.
+    """
+
+    cpu: bool = False
+    """If passed, will train on the CPU."""
 
     @property
     def sweep_dir(self) -> Path:
         return self.log_dir.parent
 
 
-def get_model(target_config: BertConfig) -> BertForSequenceClassification:
-    model_class = BertForSequenceClassification
-    # define a base model
-    base_config = BertConfig(
-        hidden_size=256,
-        intermediate_size=256,
-        num_attention_heads=16,
-        num_labels=5,
-    )
-    # define a delta models where we vary all "widths" we want to vary
-    delta_config = BertConfig(
-        hidden_size=200,
-        intermediate_size=300,
-        num_attention_heads=5,
-        num_labels=5,
-    )
-    # TODO: Not sure I understand how HPO fits into this. Do we do HPO on the base config? or on
-    # the target config, but with lower values than the base config?
-
-    # define target model
-    # NOTE: Original config:
-    # target_config = BertConfig(
-    #     hidden_size=1024,
-    #     intermediate_size=1024 * 4,
-    #     num_attention_heads=32,
-    #     num_labels=5,
-    # )
-
-    base_model = model_class(config=base_config)
-    delta_model = model_class(config=delta_config)
-    # define a base shape object based on comparing delta_model against base_model
-    base_shapes = make_base_shapes(base_model, delta_model, savefile="bert256.bsh")
-
-    target_model = model_class(config=target_config)
-    # set base shapes
-    set_base_shapes(target_model, base_shapes)
-    # you can alternatively load base shape from file
-    # set_base_shapes(target_model, 'bert256.bsh')
-    # re-initialize
-    target_model.apply(target_model._init_weights)
-
-    return target_model
-
-
-def get_optimizer(model: BertForSequenceClassification, hparams: HParams) -> AdamW:
-    # make sure to use mup optimizers for training
-    optim = MuAdamW(model.parameters(), lr=hparams.learning_rate)
-    assert isinstance(optim, AdamW)
-    return optim
-
-
-def get_lr_scheduler(
-    optimizer: Optimizer, train_dataset_length: int, num_epochs: int, batch_size: int
-):
-    num_training_steps = int(num_epochs) * (train_dataset_length // batch_size)
-    lr_scheduler = get_scheduler(
-        name="linear",
-        optimizer=optimizer,
-        num_warmup_steps=0,
-        num_training_steps=num_training_steps,
-    )
-    assert isinstance(lr_scheduler, torch.optim.lr_scheduler._LRScheduler)
-    return lr_scheduler
-
-
-def train(
-    hparams: HParams,
-    config: Config,
-):
-
-    set_seed(config.random_seed)
-
-    accelerator = Accelerator()
+def training_function(hparams: HParams, config: Config):
+    set_seed(hparams.random_seed)
 
     config.log_dir.mkdir(parents=True, exist_ok=True)
+
+    # Initialize accelerator
+    # Sample hyper-parameters for learning rate, batch size, seed and a few other HPs
+    lr = hparams.learning_rate
+    num_epochs = hparams.num_epochs
+    batch_size = hparams.batch_size
+
+    valid_epoch_metric = evaluate.load("glue", "mrpc")
+
+    # If the batch size is too big we use gradient accumulation
+    gradient_accumulation_steps = 1
+    if batch_size > MAX_GPU_BATCH_SIZE:
+        gradient_accumulation_steps = batch_size // MAX_GPU_BATCH_SIZE
+        batch_size = MAX_GPU_BATCH_SIZE
+
+    accelerator = Accelerator(
+        cpu=config.cpu,
+        mixed_precision=config.mixed_precision,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+    )
 
     if accelerator.is_main_process:
         print(f"Running in {config.log_dir}")
         with open(config.log_dir / "config.yaml", "w") as f:
             yaml.dump({"config": config, "hparams": hparams}, f)
 
-    model = get_model(hparams.model)
-    datamodule = YelpDataModule(batch_size=hparams.batch_size, config=config)
-
-    os.environ["TOKENIZERS_PARALLELISM"] = "true"
-    datamodule.prepare_data(accelerator=accelerator)
-    datamodule.setup("fit")
-
-    # accelerator.wait_for_everyone()
-
+    # train_dataloader, eval_dataloader = get_dataloaders(accelerator, batch_size)
+    # Instantiate the model (we build the model here so that the seed also control new weights initialization)
+    # model = AutoModelForSequenceClassification.from_pretrained(
+    #     "bert-base-cased", return_dict=True
+    # )
+    datamodule = GlueDataModule(
+        accelerator=accelerator, batch_size=batch_size, eval_batch_size=EVAL_BATCH_SIZE
+    )
     train_dataloader = datamodule.train_dataloader()
-    test_dataloader = datamodule.test_dataloader()
+    eval_dataloader = datamodule.val_dataloader()
 
-    optimizer: AdamW | AcceleratedOptimizer = get_optimizer(
-        model=model, hparams=hparams
+    default_config = BertConfig.from_pretrained("bert-base-cased")
+    assert isinstance(default_config, BertConfig)
+
+    small_config = _replace(
+        default_config,
+        hidden_size=64,
+        intermediate_size=128,
+        num_attention_heads=4,
+        # num_labels=2,  # TODO: This is specific to this particular dataset.
     )
-    lr_scheduler = get_scheduler(
-        name="linear",
+    model = get_bert_model(small_config, BertForSequenceClassification)
+    # model = ScalableBertModel(small_config)
+    # model = get_model(small_config)
+    # We could avoid this line since the accelerator is set with `device_placement=True` (default value).
+    # Note that if you are placing tensors on devices manually, this line absolutely needs to be before the optimizer
+    # creation otherwise training will not work on TPU (`accelerate` will kindly throw an error to make us aware of that).
+    # model = model.to(accelerator.device)
+
+    # Instantiate optimizer
+    optimizer = MuAdamW(params=model.parameters(), lr=lr)
+
+    # Instantiate scheduler
+    lr_scheduler = get_linear_schedule_with_warmup(
         optimizer=optimizer,
-        num_warmup_steps=0,
-        num_training_steps=num_training_steps,
-    )
-    lr_scheduler: AcceleratedScheduler | LRScheduler = get_lr_scheduler(
-        optimizer=optimizer,
-        train_dataset_length=datamodule.num_train_samples,
-        num_epochs=config.num_epochs,
-        batch_size=hparams.batch_size,
+        num_warmup_steps=100,
+        num_training_steps=(len(train_dataloader) * num_epochs)
+        // gradient_accumulation_steps,
     )
 
-    # TODO: Use the auto_batch_size stuff maybe?
-
-    # NOTE: set_base_shapes is causing issues with FSDP, since the weight names don't line up with
-    # the model anymore.
+    # Prepare everything
+    # There is no specific order to remember, we just need to unpack the objects in the same order
+    # we gave them to the prepare method.
     (
-        train_dataloader,
-        test_dataloader,
         model,
         optimizer,
+        train_dataloader,
+        eval_dataloader,
         lr_scheduler,
     ) = accelerator.prepare(
-        train_dataloader, test_dataloader, model, optimizer, lr_scheduler
+        model, optimizer, train_dataloader, eval_dataloader, lr_scheduler
     )  # type: ignore
-    model: BertForSequenceClassification | DDP
-    train_dataloader: DataLoader
-    test_dataloader: DataLoader
 
-    # Register the LR scheduler
-    accelerator.register_for_checkpointing(lr_scheduler)
+    assert isinstance(optimizer, (AcceleratedOptimizer))
+    assert isinstance(lr_scheduler, (_LRScheduler, AcceleratedScheduler))
 
-    epoch_metrics = test_epoch(model=model, test_dataloader=test_dataloader)
+    train_epoch_metric = datamodule.make_metric()
+    train_step_metric = datamodule.make_metric()
+    valid_epoch_metric = datamodule.make_metric()
 
-    # TODO: Resume interrupted training.
-    # if epoch_save_path.exists() and epoch_save_path.is_dir():
+    def save_dir_for_epoch(epoch: int) -> Path:
+        return config.log_dir / f"epoch_{epoch:02d}"
 
-    for epoch in range(config.num_epochs):
-        epoch_save_path = config.log_dir / f"epoch_{epoch:03d}"
+    def epoch_has_checkpoints(epoch: int) -> bool:
+        files = ["optimizer.bin", "pytorch_model.bin", "scheduler.bin"]
+        return all((save_dir_for_epoch(epoch) / file).exists() for file in files)
 
-        accelerator.save_state(str(epoch_save_path))
+    # Now we train the model
+    for epoch in range(1, num_epochs + 1):
+        epoch_save_dir = save_dir_for_epoch(epoch)
 
-        progress_bar = tqdm(train_dataloader, desc=f"training epoch {epoch}")
-        for batch in progress_bar:
-            with accelerator.accumulate(model):
-                outputs: SequenceClassifierOutput = model(**batch)
-                loss = outputs.loss
-                assert isinstance(loss, Tensor)
-                accelerator.backward(loss)
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
-                progress_bar.set_postfix({"loss": loss.item()})
-
-        epoch_metrics = test_epoch(model=model, test_dataloader=test_dataloader)
-
-        if accelerator.is_main_process:
-            with open(epoch_save_path / "metrics.json", "w") as f:
-                json.dump(epoch_metrics, f)
-
-            print(f"Epoch {epoch}:")
-            print(f"\tEval Loss: {epoch_metrics['loss']:.4f}")
-            print(f"\tAccuracy: {epoch_metrics['accuracy']:.2%}")
-
-            print(epoch_metrics)
-            torch.save(model.state_dict(), config.log_dir / f"model_{epoch}.pt")
-        # TODO: Would be nicer to be able to use this from HuggingFace:
-        # model.save_pretrained(config.log_dir / f"epoch_{epoch}")
-
-    return epoch_metrics
-
-
-def test_epoch(
-    model: BertForSequenceClassification | DDP, test_dataloader: DataLoader
-) -> EpochMetrics:
-    accurate = 0
-    total = 0
-    total_loss = 0.0
-    model.eval()
-    test_progress_bar = tqdm(test_dataloader, desc=f"Testing...")
-    for batch in test_progress_bar:
-        with torch.no_grad():
-            predictions: SequenceClassifierOutput = model(**batch)
-            y = batch["labels"]
-            accurate += predictions.logits.argmax(-1).eq(y).int().sum().item()
-            total += y.shape[0]
-            loss = predictions.loss
-            assert isinstance(loss, Tensor)
-            total_loss += loss.item()
-    accuracy = accurate / total
-    return {"accuracy": accuracy, "loss": total_loss, "n": total}
-
-
-def tune():
-    """Perform an HPO sweep using smaller transformer models, and extract the best HPO parameters
-    found. Then, use those parameters to train a very large model.
-    """
-    base_log_dir = Path("logs")
-    sweep_log_dir = base_log_dir / "test_sweep"
-    config = Config(
-        num_epochs=3,
-        max_train_samples=10_000,
-        max_test_samples=1000,
-        dataloader_num_workers=4,
-    )
-
-    experiment = build_experiment(
-        name="mup",
-        space=HParams.get_orion_space_dict(),
-        # space={"learning_rate": "log_uniform(1e-7, 1e-2, default=1e-3)"},
-        storage={
-            "type": "legacy",
-            "database": {"type": "pickleddb", "host": str(sweep_log_dir / "db.pkl")},
-        },
-        max_trials=20,
-        working_dir=sweep_log_dir,
-    )
-
-    while not experiment.is_done:
-        accelerator = Accelerator()
-        trial = suggest_trial(experiment, accelerator=accelerator)
-        print(f"Worker {accelerator.process_index} got hparams: {trial.params}")
-        hparams = HParams(**trial.params)
-
-        # Use the 'base' config, but replace the log_dir with the trial's working_dir.
-        config_for_this_trial = dataclasses.replace(
-            config, log_dir=Path(trial.working_dir)
+        train_epoch_metric_value = train_epoch(
+            model=model,
+            train_dataloader=train_dataloader,
+            accelerator=accelerator,
+            epoch=epoch,
+            optimizer=optimizer,
+            lr_scheduler=lr_scheduler,
+            epoch_metric=train_epoch_metric,
+            step_metric=train_step_metric,
         )
-        metrics = train(hparams, config_for_this_trial)
 
-        if accelerator.is_main_process:
-            print(f"Trial {trial.id} finished with metrics: {metrics}")
-            experiment.observe(
-                trial,
-                # NOTE: Put the loss as the first objective, so that Orion uses it. Also keep the
-                # other metrics as additional objectives.
-                [dict(name="test_loss", value=metrics["loss"], type="objective")]
-                + [
-                    dict(name=key, value=value, type="objective")
-                    for key, value in metrics.items()
-                    if key != "loss"
-                ],
-            )
+        valid_epoch_metric_value = validation_epoch(
+            model=model,
+            valid_dataloader=eval_dataloader,
+            accelerator=accelerator,
+            epoch=epoch,
+            epoch_metric=valid_epoch_metric,
+        )
 
-    # Idea: Could we add something like a 'best_trial_so_far' property/method on the Experiment
-    # object?
-    # TODO: This isn't typed.
-    trials = experiment.fetch_trials_by_status("completed")
-    best_trial = min(trials, key=lambda trial: trial.objective.value)
-    print(f"Best trial: {best_trial.id} with objective: {best_trial.objective.value}")
-    print(f"Best trial params: {best_trial.params}")
+        # Use accelerator.print to print only on the main process.
+        accelerator.print(
+            f"epoch {epoch}:",
+            f"\tTrain: {train_epoch_metric_value}",
+            f"\tValid: {valid_epoch_metric_value}",
+            sep="\n",
+        )
+        accelerator.save_state(str(epoch_save_dir))
 
-    # IDEA: Make the HUGE model now!
-    # TODO: Should we make it in this script here, or in a separate step?
-    print(f"Best params:")
-    for trial in sorted(trials, key=lambda trial: trial.objective.value):
-        metrics = get_trial_metrics(trial)
-        print(f"{trial.working_dir}:", trial.params, metrics)
-
-    # TODO: Run some training on the bigger model.
-    # train_big_model(best_trial)
+    return valid_epoch_metric_value
 
 
-def get_trial_metrics(trial: Trial) -> EpochMetrics:
-    last_epoch_folder = sorted(Path(trial.working_dir).glob("epoch_*"))[-1]
-    with open(last_epoch_folder / "metrics.json") as f:
-        return json.load(f)
+def train_epoch(
+    model: BertForSequenceClassification | DDP,
+    train_dataloader: DataLoader,
+    accelerator: Accelerator,
+    optimizer: AcceleratedOptimizer | AdamW,
+    lr_scheduler: _LRScheduler | AcceleratedScheduler,
+    epoch_metric: EvaluationModule,
+    step_metric: EvaluationModule,
+    epoch: int,
+):
+    model.train()
+    prediction_counter = collections.Counter()
+
+    pbar = tqdm.tqdm(train_dataloader, desc=f"Epoch {epoch}")
+    for step, batch in enumerate(pbar):
+        with accelerator.accumulate(model), warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=FutureWarning)
+            # We could avoid this line since we set the accelerator with `device_placement=True`.
+            # batch.to(accelerator.device)
+            outputs = model(**batch)
+            loss = outputs.loss
+            accelerator.backward(loss)
+            optimizer.step()
+            lr_scheduler.step()
+            optimizer.zero_grad()
+
+        postfix = {"loss": loss.detach().item()}
+        predictions = outputs.logits.detach().argmax(dim=-1)
+        predictions, references = accelerator.gather_for_metrics(
+            (predictions, batch["labels"])
+        )
+        prediction_counter.update(predictions.tolist())
+        epoch_metric.add_batch(
+            predictions=predictions,
+            references=references,
+        )
+        train_step_metric_value = step_metric.compute(
+            predictions=predictions,
+            references=references,
+        )
+        assert isinstance(train_step_metric_value, dict)
+        postfix.update(train_step_metric_value)
+        pbar.set_postfix(postfix)
+
+    accelerator.print(f"Training predictions: {prediction_counter}")
+    prediction_counter.clear()
+    return epoch_metric.compute()
 
 
-def train_big_model(best_trial: Trial):
-    # Reuse the hparams that we found on the small model, to train a big model only once!
-    # NOTE: Assuming that the hparams we were sweeping over don't have to do with the model width!
-    big_model_hparams = HParams(
-        **best_trial.params,
-        model=BertConfig(
-            hidden_size=1024,
-            intermediate_size=1024 * 4,
-            num_attention_heads=32,
-            num_labels=5,
-        ),
+def validation_epoch(
+    model: BertForSequenceClassification | DDP,
+    valid_dataloader: DataLoader,
+    epoch_metric: EvaluationModule,
+    accelerator: Accelerator,
+    epoch: int,
+):
+    model.eval()
+    prediction_counter = collections.Counter()
+    total_loss = 0.0
+    eval_pbar = tqdm.tqdm(valid_dataloader, desc=f"Evaluation epoch {epoch}")
+    for step, batch in enumerate(eval_pbar):
+        # We could avoid this line since we set the accelerator with `device_placement=True`.
+        # batch.to(accelerator.device)
+        with torch.no_grad():
+            outputs = model(**batch)
+        predictions = outputs.logits.argmax(dim=-1)
+        predictions, references, loss = accelerator.gather_for_metrics(
+            (predictions, batch["labels"], outputs.loss)
+        )
+        prediction_counter.update(predictions.tolist())
+        total_loss += loss.item()
+        epoch_metric.add_batch(
+            predictions=predictions,
+            references=references,
+        )
+
+    accelerator.print(f"Evaluation predictions: {prediction_counter}")
+    prediction_counter.clear()
+
+    epoch_metric_values = epoch_metric.compute()
+    assert isinstance(epoch_metric_values, dict)
+    epoch_metric_values.setdefault("loss", total_loss)
+    return epoch_metric_values
+
+
+def main():
+    import simple_parsing
+
+    parser = simple_parsing.ArgumentParser(
+        description="Simple example of training script."
     )
-    big_model_training_config = Config(
-        log_dir=Path("logs") / "test_sweep" / "big_model",
-        num_epochs=100,
-        max_train_samples=None,
-        max_test_samples=None,
-        dataloader_num_workers=torch.multiprocessing.cpu_count(),
-    )
-    train(big_model_hparams, big_model_training_config)
+    parser.add_arguments(Config, dest="config")
+    args = parser.parse_args()
+    config: Config = args.config
+    hparams = HParams()
+    training_function(hparams, config)
 
 
 if __name__ == "__main__":
-    tune()
+    main()
