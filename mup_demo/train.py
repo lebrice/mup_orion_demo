@@ -35,71 +35,7 @@ from mup_demo.utils import suggest_trial
 from accelerate.accelerator import AcceleratedOptimizer, AcceleratedScheduler
 from torch.optim.lr_scheduler import _LRScheduler as LRScheduler
 from torch.optim import AdamW
-
-
-def get_model(target_config: BertConfig) -> BertForSequenceClassification:
-    model_class = BertForSequenceClassification
-    # define a base model
-    base_config = BertConfig(
-        hidden_size=256,
-        intermediate_size=256,
-        num_attention_heads=16,
-        num_labels=5,
-    )
-    # define a delta models where we vary all "widths" we want to vary
-    delta_config = BertConfig(
-        hidden_size=200,
-        intermediate_size=300,
-        num_attention_heads=5,
-        num_labels=5,
-    )
-    # TODO: Not sure I understand how HPO fits into this. Do we do HPO on the base config? or on
-    # the target config, but with lower values than the base config?
-
-    # define target model
-    # NOTE: Original config:
-    # target_config = BertConfig(
-    #     hidden_size=1024,
-    #     intermediate_size=1024 * 4,
-    #     num_attention_heads=32,
-    #     num_labels=5,
-    # )
-    # TODO: Scale this correctly based on some "scale factor"?
-    # target_config = BertConfig(
-    #     hidden_size=64 * scale_factor,
-    #     intermediate_size=64 * scale_factor * 4,
-    #     num_attention_heads=max(1, int(8 * np.log2(scale_factor))),
-    #     num_labels=5,
-    # )
-
-    base_model = model_class(config=base_config)
-    delta_model = model_class(config=delta_config)
-    # define a base shape object based on comparing delta_model against base_model
-    base_shapes = make_base_shapes(base_model, delta_model, savefile="bert256.bsh")
-
-    target_model = model_class(config=target_config)
-    # set base shapes
-    set_base_shapes(target_model, base_shapes)
-    # you can alternatively load base shape from file
-    # set_base_shapes(target_model, 'bert256.bsh')
-
-    # re-initialize
-    target_model.apply(target_model._init_weights)
-
-    return target_model
-
-
-# TODO: Can't get this to work.
-# def compute_metrics(eval_preds):
-#     metric = evaluate.load("accuracy")
-#     logits, labels = eval_preds
-#     # predictions = np.argmax(logits, axis=-1)
-#     return metric.compute(
-#         logits=logits,
-#         references=labels,
-#         # predictions=predictions,
-#         average="macro",
-#     )
+from transformers import set_seed
 
 
 class EpochMetrics(TypedDict):
@@ -146,6 +82,50 @@ class Config:
         return self.log_dir.parent
 
 
+def get_model(target_config: BertConfig) -> BertForSequenceClassification:
+    model_class = BertForSequenceClassification
+    # define a base model
+    base_config = BertConfig(
+        hidden_size=256,
+        intermediate_size=256,
+        num_attention_heads=16,
+        num_labels=5,
+    )
+    # define a delta models where we vary all "widths" we want to vary
+    delta_config = BertConfig(
+        hidden_size=200,
+        intermediate_size=300,
+        num_attention_heads=5,
+        num_labels=5,
+    )
+    # TODO: Not sure I understand how HPO fits into this. Do we do HPO on the base config? or on
+    # the target config, but with lower values than the base config?
+
+    # define target model
+    # NOTE: Original config:
+    # target_config = BertConfig(
+    #     hidden_size=1024,
+    #     intermediate_size=1024 * 4,
+    #     num_attention_heads=32,
+    #     num_labels=5,
+    # )
+
+    base_model = model_class(config=base_config)
+    delta_model = model_class(config=delta_config)
+    # define a base shape object based on comparing delta_model against base_model
+    base_shapes = make_base_shapes(base_model, delta_model, savefile="bert256.bsh")
+
+    target_model = model_class(config=target_config)
+    # set base shapes
+    set_base_shapes(target_model, base_shapes)
+    # you can alternatively load base shape from file
+    # set_base_shapes(target_model, 'bert256.bsh')
+    # re-initialize
+    target_model.apply(target_model._init_weights)
+
+    return target_model
+
+
 def get_optimizer(model: BertForSequenceClassification, hparams: HParams) -> AdamW:
     # make sure to use mup optimizers for training
     optim = MuAdamW(model.parameters(), lr=hparams.learning_rate)
@@ -172,10 +152,7 @@ def train(
     config: Config,
 ):
 
-    random.seed(config.random_seed)
-    np.random.seed(config.random_seed)
-    torch.random.manual_seed(config.random_seed)
-    torch.cuda.manual_seed_all(config.random_seed)
+    set_seed(config.random_seed)
 
     accelerator = Accelerator()
 
@@ -200,6 +177,12 @@ def train(
 
     optimizer: AdamW | AcceleratedOptimizer = get_optimizer(
         model=model, hparams=hparams
+    )
+    lr_scheduler = get_scheduler(
+        name="linear",
+        optimizer=optimizer,
+        num_warmup_steps=0,
+        num_training_steps=num_training_steps,
     )
     lr_scheduler: AcceleratedScheduler | LRScheduler = get_lr_scheduler(
         optimizer=optimizer,

@@ -15,8 +15,11 @@
 from __future__ import annotations
 import argparse
 from dataclasses import dataclass
-from typing import Literal, TypedDict
+import collections
+from functools import singledispatch
+from typing import Callable, Literal, TypeVar, TypedDict
 import warnings
+from accelerate import init_empty_weights
 
 import torch
 from torch.optim import AdamW
@@ -123,43 +126,100 @@ def get_dataloaders(accelerator: Accelerator, batch_size: int = 16):
     return train_dataloader, eval_dataloader
 
 
-def replace(model_config: BertConfig, **kwargs) -> BertConfig:
+from transformers import PretrainedConfig
+
+ConfigType = TypeVar("ConfigType", bound=PretrainedConfig)
+
+
+def _replace(model_config: ConfigType, **kwargs) -> ConfigType:
     delta_config = model_config.to_dict()
     delta_config.update(**kwargs)
     return type(model_config).from_dict(delta_config)
 
 
-def get_model(target_config: BertConfig) -> BertForSequenceClassification:
-    model_class = BertForSequenceClassification
-    # define a base model
-    base_config = BertConfig(
-        hidden_size=256,
-        intermediate_size=256,
-        num_attention_heads=16,
-        # num_labels=5,
-    )
-    base_model = model_class(base_config)
+from transformers import PreTrainedModel
+from transformers import BertPreTrainedModel
 
-    # OK seems like I'm making some progress.
+M = TypeVar("M", bound=PreTrainedModel)
+BertModelType = TypeVar("BertModelType", bound=BertPreTrainedModel)
 
-    # base_model = BertForSequenceClassification.from_pretrained("bert-base-cased")
-    # base_config = base_model.config
-    # assert isinstance(base_config, BertConfig)
-    # define a delta models where we vary all "widths" we want to vary
-    delta_config = replace(
+
+class ScalableBertModel(BertForSequenceClassification):
+    def __init__(self, config: BertConfig):
+        super().__init__(config)
+        base_config = _replace(
+            config,
+            hidden_size=64,
+            intermediate_size=128,
+            num_attention_heads=4,
+        )
+        delta_config = _replace(
+            config,
+            hidden_size=200,
+            intermediate_size=300,
+            num_attention_heads=5,
+        )
+        with init_empty_weights():
+            base_model = type(self)(base_config)
+            delta_model = type(self)(delta_config)
+        base_shapes = make_base_shapes(base_model, delta_model, savefile="bert256.bsh")
+        # set base shapes
+        set_base_shapes(self, base_shapes)
+        # re-initialize
+        self.apply(self._init_weights)
+
+        print(f"Total parameters in the base model:   {base_model.num_parameters()}")
+        print(f"Total parameters in the delta model:  {delta_model.num_parameters()}")
+        print(f"Total parameters in the target model: {self.num_parameters()}")
+
+
+def get_bert_model(
+    config: BertConfig, model_class: type[BertModelType]
+) -> BertModelType:
+    base_config = BertConfig()
+    delta_config = _replace(
         base_config,
         hidden_size=200,
         intermediate_size=300,
         num_attention_heads=5,
     )
-    # TODO: There seems to be a bug that happens only when using a BertForSequenceClassification
-    # model directly, instead of using a pretrained model: The validation metrics are fixed, and
-    # don't change at all, regardless of training. This is not the case when using a pretrained
-    # model.
-    delta_model = model_class(delta_config)
+    # define a base model
+    with init_empty_weights():
+        base_model = model_class(base_config)
+        delta_model = model_class(delta_config)
+    target_model = model_class(config=config)
 
-    # base_model = model_class(config=base_config)
-    # delta_model = model_class(config=delta_config)
+    base_shapes = make_base_shapes(base_model, delta_model, savefile="bert256.bsh")
+    # set base shapes
+    set_base_shapes(target_model, base_shapes)
+    # re-initialize
+    target_model.apply(target_model._init_weights)
+    print(f"Total parameters in the base model:   {base_model.num_parameters()}")
+    print(f"Total parameters in the delta model:  {delta_model.num_parameters()}")
+    print(f"Total parameters in the target model: {target_model.num_parameters()}")
+    return target_model
+
+
+def get_model(
+    base_config: ConfigType,
+    delta_config: ConfigType,
+    target_config: ConfigType,  # the dimensions to vary?
+    model_class: type[M],
+) -> M:
+
+    # define a delta models where we vary all "widths" we want to vary
+    delta_config = _replace(
+        base_config,
+        hidden_size=200,
+        intermediate_size=300,
+        num_attention_heads=5,
+    )
+
+    # define a base model
+    with init_empty_weights():
+        base_model = model_class(base_config)
+        delta_model = model_class(delta_config)
+
     # define a base shape object based on comparing delta_model against base_model
     base_shapes = make_base_shapes(base_model, delta_model, savefile="bert256.bsh")
 
@@ -170,6 +230,9 @@ def get_model(target_config: BertConfig) -> BertForSequenceClassification:
     set_base_shapes(target_model, base_shapes)
     # you can alternatively load base shape from file
     # set_base_shapes(target_model, 'bert256.bsh')
+
+    # TODO: Could also probably do something like this:
+    # https://huggingface.co/docs/accelerate/usage_guides/big_modeling#loading-weights
 
     # re-initialize
     target_model.apply(target_model._init_weights)
@@ -200,28 +263,36 @@ def training_function(hparams: HParams, config: Config):
         batch_size = MAX_GPU_BATCH_SIZE
 
     set_seed(seed)
-    train_dataloader, eval_dataloader = get_dataloaders(accelerator, batch_size)
+    # train_dataloader, eval_dataloader = get_dataloaders(accelerator, batch_size)
     # Instantiate the model (we build the model here so that the seed also control new weights initialization)
     # model = AutoModelForSequenceClassification.from_pretrained(
     #     "bert-base-cased", return_dict=True
     # )
+    from mup_demo.data import GlueDataModule
+
+    datamodule = GlueDataModule(
+        accelerator=accelerator, batch_size=batch_size, eval_batch_size=EVAL_BATCH_SIZE
+    )
+    train_dataloader = datamodule.train_dataloader()
+    eval_dataloader = datamodule.val_dataloader()
+
     from transformers import AutoConfig
 
-    default_config = BertConfig.from_pretrained("bert-base-cased")
-    big_config = replace(
-        default_config,
+    big_config = BertConfig.from_pretrained(
+        "bert-base-cased",
         hidden_size=1024,
         intermediate_size=1024 * 4,
         num_attention_heads=32,
+        num_labels=datamodule.num_labels,
     )
-
-    small_config = replace(
-        default_config,
+    small_config = BertConfig.from_pretrained(
+        "bert-base-cased",
         hidden_size=64,
         intermediate_size=128,
         num_attention_heads=4,
         # num_labels=2,  # TODO: This is specific to this particular dataset.
     )
+    model = ScalableBertModel(small_config)
     model = get_model(small_config)
     # We could avoid this line since the accelerator is set with `device_placement=True` (default value).
     # Note that if you are placing tensors on devices manually, this line absolutely needs to be before the optimizer
@@ -266,7 +337,7 @@ def training_function(hparams: HParams, config: Config):
 
     train_step_metric = evaluate.load("glue", "mrpc")
     train_epoch_metric = evaluate.load("glue", "mrpc")
-
+    prediction_counter = collections.Counter()
     # Now we train the model
     for epoch in range(num_epochs):
         model.train()

@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
+import collections
+from pkgutil import get_data
 
 import torch
 from torch.optim import AdamW
@@ -50,6 +52,7 @@ from transformers import (
 
 MAX_GPU_BATCH_SIZE = 128
 EVAL_BATCH_SIZE = 32
+from collections import Counter
 
 
 def get_dataloaders(accelerator: Accelerator, batch_size: int):
@@ -147,9 +150,9 @@ def training_function(config, args):
     # - When using a fresh model, the accuracy goes directly to 0.68, regardless of training.
     from transformers import BertForSequenceClassification, BertConfig, AutoConfig
 
-    model = AutoModelForSequenceClassification.from_pretrained("bert-base-cased")
+    # model = AutoModelForSequenceClassification.from_pretrained("bert-base-cased")
     # model_config = AutoConfig.from_pretrained("bert-base-cased")
-    # model = BertForSequenceClassification(BertConfig())
+    model = BertForSequenceClassification(BertConfig())
 
     # from transformers import AutoConfig
     # model_config = AutoConfig.from_pretrained("bert-base-cased")
@@ -191,6 +194,7 @@ def training_function(config, args):
     for epoch in range(num_epochs):
         model.train()
         pbar = tqdm.tqdm(train_dataloader, desc=f"Train Epoch {epoch}")
+        prediction_counter = collections.Counter()
         for step, batch in enumerate(pbar):
             with accelerator.accumulate(model):
                 # We could avoid this line since we set the accelerator with `device_placement=True`.
@@ -204,9 +208,11 @@ def training_function(config, args):
 
             postfix = {"loss": loss.detach().item()}
             predictions = outputs.logits.detach().argmax(dim=-1)
+
             predictions, references = accelerator.gather_for_metrics(
                 (predictions, batch["labels"])
             )
+            prediction_counter.update(predictions.tolist())
             train_epoch_metric.add_batch(
                 predictions=predictions,
                 references=references,
@@ -218,7 +224,8 @@ def training_function(config, args):
             postfix.update(train_step_metric.compute())
             pbar.set_postfix(postfix)
             # print(f"step {step}: {loss} {train_metric_result}")
-
+        accelerator.print(f"Training Predictions: {prediction_counter}")
+        prediction_counter.clear()
         model.eval()
         eval_pbar = tqdm.tqdm(eval_dataloader, desc=f"Validation epoch {epoch}")
         for step, batch in enumerate(eval_pbar):
@@ -230,11 +237,12 @@ def training_function(config, args):
             predictions, references = accelerator.gather_for_metrics(
                 (predictions, batch["labels"])
             )
+            prediction_counter.update(predictions.tolist())
             valid_metric.add_batch(
                 predictions=predictions,
                 references=references,
             )
-
+        accelerator.print(f"Validation predictions: {prediction_counter}")
         # Use accelerator.print to print only on the main process.
         accelerator.print(
             f"epoch {epoch}:",
