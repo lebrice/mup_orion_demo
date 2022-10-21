@@ -1,6 +1,4 @@
 from setuptools import setup
-import os
-import shutil
 
 file_name = "mup_demo"
 

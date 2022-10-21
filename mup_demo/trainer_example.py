@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# coding=utf-8
 # Copyright 2020 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,8 +12,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""
-Fine-tuning the library models for causal language modeling (GPT, GPT-2, CTRL, ...) on a text file or a dataset.
+"""Fine-tuning the library models for causal language modeling (GPT, GPT-2, CTRL, ...) on a text
+file or a dataset.
 
 Here is the full list of checkpoints on the hub that can be fine-tuned by this script:
 https://huggingface.co/models?filter=text-generation
@@ -32,27 +31,27 @@ accelerate launch mup_demo/trainer_example.py \
 """
 from __future__ import annotations
 
-# You can also adapt this script on your own causal language modeling task. Pointers for this are left as comments.
-
 import logging
 import math
 import os
 import sys
 from dataclasses import dataclass, field
 from itertools import chain
-from typing import Optional
 
 import datasets
-from datasets.load import load_dataset
-from datasets import Dataset
-
 import evaluate
+import mutransformers
+import simple_parsing
 import transformers
+from datasets import Dataset, DatasetDict
+from datasets.load import load_dataset
+from mutransformers import GPT2Config
+from simple_parsing.helpers import flag
+from torch import nn
 from transformers import (
     CONFIG_MAPPING,
     MODEL_FOR_CAUSAL_LM_MAPPING,
     AutoConfig,
-    AutoModelForCausalLM,
     AutoTokenizer,
     HfArgumentParser,
     Trainer,
@@ -62,13 +61,19 @@ from transformers import (
     set_seed,
 )
 from transformers.testing_utils import CaptureLogger
+from transformers.trainer import (
+    ALL_LAYERNORM_LAYERS,
+    ShardedDDPOption,
+    get_parameter_names,
+    is_sagemaker_mp_enabled,
+)
 from transformers.trainer_utils import get_last_checkpoint
-from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
-from datasets import DatasetDict
-import simple_parsing
-from simple_parsing.helpers import flag, choice
+
 from mup_demo.model import get_gpt2_model
+
+# You can also adapt this script on your own causal language modeling task. Pointers for this are left as comments.
+
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 # check_min_version("4.24.0.dev0")
@@ -85,8 +90,7 @@ MODEL_CONFIG_CLASSES = list(MODEL_FOR_CAUSAL_LM_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
 # TODO: Could try to add the mup-variants in these lists here?
-import mutransformers
-from mutransformers import GPT2LMHeadModel, GPT2Config
+
 
 MODEL_CONFIG_CLASSES[MODEL_CONFIG_CLASSES.index(transformers.GPT2Config)] = GPT2Config
 CONFIG_MAPPING["gpt2"] = GPT2Config
@@ -94,34 +98,33 @@ CONFIG_MAPPING["gpt2"] = GPT2Config
 
 @dataclass
 class ModelArguments:
-    """
-    Arguments pertaining to which model/config/tokenizer we are going to fine-tune, or train from scratch.
-    """
+    """Arguments pertaining to which model/config/tokenizer we are going to fine-tune, or train
+    from scratch."""
 
-    model_name_or_path: Optional[str] = None
+    model_name_or_path: str | None = None
     """The model checkpoint for weights initialization.Don't set if you want to train a model from
     scratch.
     """
 
-    model_type: Optional[str] = field(
+    model_type: str | None = field(
         default=None,
         metadata={
             "help": "If training from scratch, pass a model type from the list: "
             + ", ".join(MODEL_TYPES)
         },
     )
-    config_overrides: Optional[str] = None
-    """Override some existing default config settings when a model is trained from scratch. 
+    config_overrides: str | None = None
+    """Override some existing default config settings when a model is trained from scratch.
     Example: "n_embd=10,resid_pdrop=0.2,scale_attn_weights=false,summary_type=cls_index"
     """
 
-    config_name: Optional[str] = None
+    config_name: str | None = None
     """ Pretrained config name or path if not the same as model_name """
 
-    tokenizer_name: Optional[str] = None
+    tokenizer_name: str | None = None
     """ Pretrained tokenizer name or path if not the same as model_name """
 
-    cache_dir: Optional[str] = None
+    cache_dir: str | None = None
     """Where do you want to store the pretrained models downloaded from huggingface.co"""
 
     use_fast_tokenizer: bool = flag(True)
@@ -131,7 +134,7 @@ class ModelArguments:
     """ The specific model version to use (can be a branch name, tag name or commit id)."""
 
     use_auth_token: bool = False
-    """Will use the token generated when running `huggingface-cli login` (necessary to use this 
+    """Will use the token generated when running `huggingface-cli login` (necessary to use this
     script with private models).
     """
 
@@ -146,33 +149,31 @@ class ModelArguments:
 
 @dataclass
 class DataTrainingArguments:
-    """
-    Arguments pertaining to what data we are going to input our model for training and eval.
-    """
+    """Arguments pertaining to what data we are going to input our model for training and eval."""
 
-    dataset_name: Optional[str] = None
+    dataset_name: str | None = None
     """The name of the dataset to use (via the datasets library)."""
 
-    dataset_config_name: Optional[str] = None
+    dataset_config_name: str | None = None
     """The configuration name of the dataset to use (via the datasets library)."""
 
-    train_file: Optional[str] = None
+    train_file: str | None = None
     """The input training data file (a text file)."""
 
-    validation_file: Optional[str] = None
+    validation_file: str | None = None
     """An optional input evaluation data file to evaluate the perplexity on (a text file)."""
 
-    max_train_samples: Optional[int] = None
+    max_train_samples: int | None = None
     """For debugging purposes or quicker training, truncate the number of training examples to
     this value if set."""
 
-    max_eval_samples: Optional[int] = None
+    max_eval_samples: int | None = None
     """For debugging purposes or quicker training, truncate the number of evaluation examples to
     this value if set.
     """
 
-    block_size: Optional[int] = None
-    """Optional input sequence length after tokenization. 
+    block_size: int | None = None
+    """Optional input sequence length after tokenization.
     The training dataset will be truncated in block of this size for training.
     Default to the model max input length for single sentence inputs (take into account special
     tokens).
@@ -181,25 +182,19 @@ class DataTrainingArguments:
     overwrite_cache: bool = False
     """Overwrite the cached training and evaluation sets"""
 
-    validation_split_percentage: Optional[int] = 5
+    validation_split_percentage: int | None = 5
     """The percentage of the train set used as validation set in case there's no validation split.
     """
 
-    preprocessing_num_workers: Optional[int] = None
+    preprocessing_num_workers: int | None = None
     """The number of processes to use for the preprocessing."""
 
     keep_linebreaks: bool = True
     """Whether to keep line breaks when using TXT files or not."""
 
     def __post_init__(self):
-        if (
-            self.dataset_name is None
-            and self.train_file is None
-            and self.validation_file is None
-        ):
-            raise ValueError(
-                "Need either a dataset name or a training/validation file."
-            )
+        if self.dataset_name is None and self.train_file is None and self.validation_file is None:
+            raise ValueError("Need either a dataset name or a training/validation file.")
         else:
             if self.train_file is not None:
                 _raise_if_bad_extension(self.train_file, "train_file")
@@ -214,9 +209,7 @@ def _raise_if_bad_extension(file_path: str, attr_name: str):
 
 
 def parse_args() -> tuple[ModelArguments, DataTrainingArguments, TrainingArguments]:
-    parser = simple_parsing.ArgumentParser(
-        description=__doc__, add_config_path_arg=True
-    )
+    parser = simple_parsing.ArgumentParser(description=__doc__, add_config_path_arg=True)
     parser.add_arguments(ModelArguments, dest="model")
     parser.add_arguments(DataTrainingArguments, dest="data")
     parser.add_arguments(TrainingArguments, dest="training")
@@ -226,9 +219,7 @@ def parse_args() -> tuple[ModelArguments, DataTrainingArguments, TrainingArgumen
     training_args: TrainingArguments
 
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
-        parser = HfArgumentParser(
-            (ModelArguments, DataTrainingArguments, TrainingArguments)
-        )
+        parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
         # If we pass only one argument to the script and it's the path to a json file,
         # let's parse it to get our arguments.
         model_args, data_args, training_args = parser.parse_json_file(
@@ -252,15 +243,6 @@ def main():
     return run(model_args=model_args, data_args=data_args, training_args=training_args)
 
 
-from transformers.trainer import (
-    is_sagemaker_mp_enabled,
-    ALL_LAYERNORM_LAYERS,
-    get_parameter_names,
-    ShardedDDPOption,
-)
-from torch import nn
-
-
 class CustomTrainer(Trainer):
     def create_optimizer(self):
         # NOTE: Copying all of this just to be certain that it uses the MuAdamW optimizer.
@@ -275,29 +257,23 @@ class CustomTrainer(Trainer):
             optimizer_grouped_parameters = [
                 {
                     "params": [
-                        p
-                        for n, p in opt_model.named_parameters()
-                        if n in decay_parameters
+                        p for n, p in opt_model.named_parameters() if n in decay_parameters
                     ],
                     "weight_decay": self.args.weight_decay,
                 },
                 {
                     "params": [
-                        p
-                        for n, p in opt_model.named_parameters()
-                        if n not in decay_parameters
+                        p for n, p in opt_model.named_parameters() if n not in decay_parameters
                     ],
                     "weight_decay": 0.0,
                 },
             ]
 
-            optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(
-                self.args
-            )
-            ### NEW CODE:
+            optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(self.args)
+            # NEW CODE: #
             optimizer_cls = MuAdamW
             print(f"Using MuP optimizer: {optimizer_cls}")
-            ###
+            # END NEW CODE #
 
             if self.sharded_ddp == ShardedDDPOption.SIMPLE:
                 from transformers.trainer import OSS  # type: ignore
@@ -308,9 +284,7 @@ class CustomTrainer(Trainer):
                     **optimizer_kwargs,
                 )
             else:
-                self.optimizer = optimizer_cls(
-                    optimizer_grouped_parameters, **optimizer_kwargs
-                )
+                self.optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
                 if optimizer_cls.__name__ == "Adam8bit":
                     import bitsandbytes  # type: ignore
 
@@ -318,12 +292,8 @@ class CustomTrainer(Trainer):
 
                     for module in opt_model.modules():
                         if isinstance(module, nn.Embedding):
-                            manager.register_module_override(
-                                module, "weight", {"optim_bits": 32}
-                            )
-                            logger.debug(
-                                f"bitsandbytes: will optimize {module} in fp32"
-                            )
+                            manager.register_module_override(module, "weight", {"optim_bits": 32})
+                            logger.debug(f"bitsandbytes: will optimize {module} in fp32")
 
         if is_sagemaker_mp_enabled():
             from transformers.trainer import smp  # type: ignore
@@ -375,9 +345,7 @@ def run(
                 f"Output directory ({training_args.output_dir}) already exists and is not empty. "
                 "Use --overwrite_output_dir to overcome."
             )
-        elif (
-            last_checkpoint is not None and training_args.resume_from_checkpoint is None
-        ):
+        elif last_checkpoint is not None and training_args.resume_from_checkpoint is None:
             logger.info(
                 f"Checkpoint detected, resuming training at {last_checkpoint}. To avoid this behavior, change "
                 "the `--output_dir` or add `--overwrite_output_dir` to train from scratch."
@@ -480,9 +448,7 @@ def run(
     if model_args.config_name:
         config = AutoConfig.from_pretrained(model_args.config_name, **config_kwargs)
     elif model_args.model_name_or_path:
-        config = AutoConfig.from_pretrained(
-            model_args.model_name_or_path, **config_kwargs
-        )
+        config = AutoConfig.from_pretrained(model_args.model_name_or_path, **config_kwargs)
     else:
         assert model_args.model_type is not None
         # FIXME: Make this cleaner. Currently just overwriting the config with the mup variant.
@@ -503,9 +469,7 @@ def run(
         "use_auth_token": True if model_args.use_auth_token else None,
     }
     if model_args.tokenizer_name:
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_args.tokenizer_name, **tokenizer_kwargs
-        )
+        tokenizer = AutoTokenizer.from_pretrained(model_args.tokenizer_name, **tokenizer_kwargs)
     elif model_args.model_name_or_path:
         tokenizer = AutoTokenizer.from_pretrained(
             model_args.model_name_or_path, **tokenizer_kwargs
@@ -540,9 +504,7 @@ def run(
         #     )
         # FIXME:
         model = get_gpt2_model(config, model_type=mutransformers.GPT2LMHeadModel)
-        n_params = sum(
-            dict((p.data_ptr(), p.numel()) for p in model.parameters()).values()
-        )
+        n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
         logger.info(f"Model size={n_params/2**20:.2f}M params")
         model.resize_token_embeddings(len(tokenizer))
 
@@ -559,9 +521,7 @@ def run(
     text_column_name = "text" if "text" in column_names else column_names[0]
 
     # since this will be pickled to avoid _LazyModule error in Hasher force logger loading before tokenize_function
-    tok_logger = transformers.utils.logging.get_logger(
-        "transformers.tokenization_utils_base"
-    )
+    tok_logger = transformers.utils.logging.get_logger("transformers.tokenization_utils_base")
 
     def tokenize_function(examples):
         with CaptureLogger(tok_logger) as cl:
@@ -678,9 +638,7 @@ def run(
         # Data collator will default to DataCollatorWithPadding, so we change it.
         data_collator=default_data_collator,
         compute_metrics=(
-            compute_metrics
-            if training_args.do_eval and not is_torch_tpu_available()
-            else None
+            compute_metrics if training_args.do_eval and not is_torch_tpu_available() else None
         ),
         preprocess_logits_for_metrics=(
             preprocess_logits_for_metrics
@@ -741,9 +699,7 @@ def run(
         kwargs["dataset_tags"] = data_args.dataset_name
         if data_args.dataset_config_name is not None:
             kwargs["dataset_args"] = data_args.dataset_config_name
-            kwargs[
-                "dataset"
-            ] = f"{data_args.dataset_name} {data_args.dataset_config_name}"
+            kwargs["dataset"] = f"{data_args.dataset_name} {data_args.dataset_config_name}"
         else:
             kwargs["dataset"] = data_args.dataset_name
 

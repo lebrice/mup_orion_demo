@@ -1,21 +1,16 @@
 from __future__ import annotations
-import typing
-from datasets import DatasetDict, DatasetInfo, Features, SplitInfo, load_dataset
-from transformers import AutoTokenizer
+
 import contextlib
+import typing
+
 import evaluate
-from evaluate import EvaluationModule
-from transformers import BatchEncoding
-from torch.utils.data import DataLoader
-from transformers import AutoTokenizer
-from torch.utils.data import DataLoader
-from transformers import AutoTokenizer
-from torch.utils.data import Dataset
-from datasets.load import load_dataset_builder
-from accelerate.accelerator import AcceleratorState
-from accelerate.accelerator import prepare_data_loader
 from accelerate import Accelerator, DistributedType
+from datasets import DatasetDict, DatasetInfo, Features, SplitInfo, load_dataset
 from datasets.builder import DatasetBuilder
+from datasets.load import load_dataset_builder
+from evaluate import EvaluationModule
+from torch.utils.data import DataLoader, Dataset
+from transformers import AutoTokenizer, BatchEncoding
 
 if typing.TYPE_CHECKING:
     from .train import Config
@@ -45,9 +40,7 @@ class TextDataModule:
         self.batch_size = batch_size
         self.accelerator = accelerator
 
-        self.dataset_builder: DatasetBuilder = load_dataset_builder(
-            *self.dataset_name_and_task
-        )
+        self.dataset_builder: DatasetBuilder = load_dataset_builder(*self.dataset_name_and_task)
         self.train_dataset: Dataset | None = None
         self.test_dataset: Dataset | None = None
 
@@ -101,9 +94,7 @@ class YelpDataModule(TextDataModule):
         assert isinstance(dataset, DatasetDict)
         # self.tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
         with (
-            self.accelerator.main_process_first()
-            if self.accelerator
-            else contextlib.nullcontext()
+            self.accelerator.main_process_first() if self.accelerator else contextlib.nullcontext()
         ):
             tokenized_datasets = dataset.map(
                 # tokenizer,  # todo: look into using the tokenizer directly?
@@ -122,13 +113,9 @@ class YelpDataModule(TextDataModule):
 
         train_dataset = tokenized_datasets["train"]
         test_dataset = tokenized_datasets["test"]
-        if self.config.max_train_samples and self.config.max_train_samples < len(
-            train_dataset
-        ):
+        if self.config.max_train_samples and self.config.max_train_samples < len(train_dataset):
             train_dataset = train_dataset.select(range(self.config.max_train_samples))
-        if self.config.max_test_samples and self.config.max_test_samples < len(
-            test_dataset
-        ):
+        if self.config.max_test_samples and self.config.max_test_samples < len(test_dataset):
             test_dataset = test_dataset.select(range(self.config.max_test_samples))
         self.train_dataset = train_dataset
         self.test_dataset = test_dataset
@@ -211,9 +198,8 @@ class GlueDataModule(TextDataModule):
         self.tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
 
     def train_dataloader(self) -> DataLoader:
-        """
-        Creates a set of `DataLoader`s for the `glue` dataset,
-        using "bert-base-cased" as the tokenizer.
+        """Creates a set of `DataLoader`s for the `glue` dataset, using "bert-base-cased" as the
+        tokenizer.
 
         Args:
             accelerator (`Accelerator`):
@@ -249,10 +235,11 @@ class GlueDataModule(TextDataModule):
         )
 
 
-def get_glue_dataloaders(accelerator: Accelerator, batch_size: int = 16):
-    """
-    Creates a set of `DataLoader`s for the `glue` dataset,
-    using "bert-base-cased" as the tokenizer.
+def get_glue_dataloaders(
+    accelerator: Accelerator, batch_size: int = 16, eval_batch_size: int | None = None
+):
+    """Creates a set of `DataLoader`s for the `glue` dataset, using "bert-base-cased" as the
+    tokenizer.
 
     Args:
         accelerator (`Accelerator`):
@@ -260,6 +247,7 @@ def get_glue_dataloaders(accelerator: Accelerator, batch_size: int = 16):
         batch_size (`int`, *optional*):
             The batch size for the train and validation DataLoaders.
     """
+    eval_batch_size = eval_batch_size or batch_size
     tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
     datasets = load_dataset("glue", "mrpc")
 
@@ -305,7 +293,7 @@ def get_glue_dataloaders(accelerator: Accelerator, batch_size: int = 16):
         tokenized_datasets["validation"],  # type: ignore
         shuffle=False,
         collate_fn=collate_fn,
-        batch_size=EVAL_BATCH_SIZE,
+        batch_size=eval_batch_size,
     )
 
     return train_dataloader, eval_dataloader

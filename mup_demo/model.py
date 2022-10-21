@@ -1,20 +1,24 @@
 from __future__ import annotations
-from dataclasses import dataclass
-from mutransformers import BertConfig, BertForSequenceClassification
-from mup import make_base_shapes, set_base_shapes
-from dataclasses import field
+
 import functools
-from simple_parsing.helpers.hparams.hyperparameters import HyperParameters
-from simple_parsing.helpers.hparams.hparam import log_uniform
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from functools import partial
 from typing import TypeVar
+
 from accelerate import init_empty_weights
+from mutransformers import (
+    BertConfig,
+    BertForSequenceClassification,
+    BertPreTrainedModel,
+    GPT2Config,
+    GPT2LMHeadModel,
+    PretrainedConfig,
+    PreTrainedModel,
+)
+from simple_parsing.helpers.hparams.hparam import log_uniform
+from simple_parsing.helpers.hparams.hyperparameters import HyperParameters
 
-
-from mutransformers import BertConfig, BertForSequenceClassification
 from mup import make_base_shapes, set_base_shapes
-from mutransformers import PretrainedConfig, PreTrainedModel, BertPreTrainedModel
-
 
 ConfigType = TypeVar("ConfigType", bound=PretrainedConfig)
 
@@ -77,9 +81,7 @@ class ScalableBertModel(BertForSequenceClassification):
         print(f"Total parameters in the target model: {self.num_parameters()}")
 
 
-def get_bert_model(
-    config: BertConfig, model_type: type[BertModelType]
-) -> BertModelType:
+def get_bert_model(config: BertConfig, model_type: type[BertModelType]) -> BertModelType:
     base_config = _replace(
         config,
         hidden_size=64,
@@ -109,9 +111,6 @@ def get_bert_model(
     print(f"Total parameters in the target model: {target_model.num_parameters()}")
     return target_model
 
-
-from mutransformers import GPT2Config, GPT2LMHeadModel
-from functools import partial
 
 GPT2ModelType = TypeVar("GPT2ModelType", bound=GPT2LMHeadModel)
 

@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2021 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,42 +12,35 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from __future__ import annotations
-from dataclasses import dataclass
-import yaml
-import collections
-from typing import Literal
-import warnings
 
-import torch
-from torch.optim import AdamW
-from torch.utils.data import DataLoader
-import evaluate
-import tqdm
-from accelerate import Accelerator, DistributedType
-from datasets.load import load_dataset
-from transformers import (
-    AutoTokenizer,
-    get_linear_schedule_with_warmup,
-    set_seed,
-)
-from mutransformers import BertConfig, BertForSequenceClassification
-from mup import MuAdamW
+import collections
 import warnings
-from mup_demo.model import _replace, get_bert_model
-from accelerate.accelerator import AcceleratedOptimizer, AcceleratedScheduler
-from torch.optim.lr_scheduler import _LRScheduler
-from torch.nn.parallel import DistributedDataParallel as DDP
-from evaluate import EvaluationModule
-from mup_demo.data import GlueDataModule
+from dataclasses import dataclass
 from pathlib import Path
-from dataclasses import asdict
+from typing import Literal
+
+import evaluate
+import torch
+import tqdm
+import yaml
+from accelerate import Accelerator
+from accelerate.accelerator import AcceleratedOptimizer, AcceleratedScheduler
+from evaluate import EvaluationModule
+from mutransformers import BertConfig, BertForSequenceClassification
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import _LRScheduler
+from torch.utils.data import DataLoader
+from transformers import get_linear_schedule_with_warmup, set_seed
+
+from mup import MuAdamW
+from mup_demo.data import GlueDataModule
+from mup_demo.model import HParams, _replace, get_bert_model
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 MAX_GPU_BATCH_SIZE = 256
 EVAL_BATCH_SIZE = 32
-
-from mup_demo.model import HParams
 
 
 @dataclass(frozen=True)
@@ -137,20 +129,13 @@ def training_function(hparams: HParams, config: Config):
     lr_scheduler = get_linear_schedule_with_warmup(
         optimizer=optimizer,
         num_warmup_steps=100,
-        num_training_steps=(len(train_dataloader) * num_epochs)
-        // gradient_accumulation_steps,
+        num_training_steps=(len(train_dataloader) * num_epochs) // gradient_accumulation_steps,
     )
 
     # Prepare everything
     # There is no specific order to remember, we just need to unpack the objects in the same order
     # we gave them to the prepare method.
-    (
-        model,
-        optimizer,
-        train_dataloader,
-        eval_dataloader,
-        lr_scheduler,
-    ) = accelerator.prepare(
+    (model, optimizer, train_dataloader, eval_dataloader, lr_scheduler,) = accelerator.prepare(
         model, optimizer, train_dataloader, eval_dataloader, lr_scheduler
     )  # type: ignore
 
@@ -231,9 +216,7 @@ def train_epoch(
 
         postfix = {"loss": loss.detach().item()}
         predictions = outputs.logits.detach().argmax(dim=-1)
-        predictions, references = accelerator.gather_for_metrics(
-            (predictions, batch["labels"])
-        )
+        predictions, references = accelerator.gather_for_metrics((predictions, batch["labels"]))
         prediction_counter.update(predictions.tolist())
         epoch_metric.add_batch(
             predictions=predictions,
@@ -291,9 +274,7 @@ def validation_epoch(
 def main():
     import simple_parsing
 
-    parser = simple_parsing.ArgumentParser(
-        description="Simple example of training script."
-    )
+    parser = simple_parsing.ArgumentParser(description="Simple example of training script.")
     parser.add_arguments(Config, dest="config")
     args = parser.parse_args()
     config: Config = args.config

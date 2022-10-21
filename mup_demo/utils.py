@@ -1,17 +1,16 @@
-import functools
-from typing import TypeVar
-from orion.client import ExperimentClient
-import os
-from orion.core.worker.trial import Trial
-from accelerate import Accelerator
-from orion.client.experiment import TrialCM
-from pathlib import Path
-import pickle
-import torch
 import contextlib
-from typing import Callable
+import functools
+import os
+import pickle
+from pathlib import Path
+from typing import Callable, TypeVar
+
+import torch
+from accelerate import Accelerator
+from orion.client import ExperimentClient
+from orion.client.experiment import TrialCM
+from orion.core.worker.trial import Trial
 from typing_extensions import ParamSpec
-import tempfile
 
 
 def suggest_trial_manual(experiment: ExperimentClient) -> Trial:
@@ -110,11 +109,11 @@ def in_ddp_context() -> bool:
     )
 
 
-O = TypeVar("O")
+OutputType = TypeVar("OutputType")
 P = ParamSpec("P")
 
 
-def runs_on_main_process(function: Callable[P, O]) -> Callable[P, O]:
+def runs_on_main_process(function: Callable[P, OutputType]) -> Callable[P, OutputType]:
     """Makes the decorated function or method run only on the main process when in a DDP context.
 
     The results are then pickled to other processes, to make it look as if all processes ran the
@@ -136,7 +135,7 @@ def runs_on_main_process(function: Callable[P, O]) -> Callable[P, O]:
         master_port = int(os.environ["MASTER_PORT"])
         filename = Path(f"_{function.__qualname__}_{master_addr}_{master_port}.pkl")
         with main_process_first():
-            output: O
+            output: OutputType
             if not filename.exists() and local_rank == 0:
                 # Main worker!
                 output = function(*args, **kwargs)
