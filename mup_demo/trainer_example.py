@@ -26,7 +26,7 @@ accelerate launch mup_demo/trainer_example.py \
     --model_name_or_path gpt2 --dataset_name wikitext \
     --dataset_config_name wikitext-2-raw-v1 \
     --per_device_trai:n_batch_size 8 --per_device_eval_batch_size 8 \
-    --do_train --do_eval --output_dir test-clm2 \
+    --do_train --do_eval --output_dir test-clm \
     # --resume_from_checkpoint=test-clm
 ```
 """
@@ -66,7 +66,8 @@ from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
 from datasets import DatasetDict
-
+import simple_parsing
+from simple_parsing.helpers import flag, choice
 from mup_demo.model import get_gpt2_model
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
@@ -97,14 +98,11 @@ class ModelArguments:
     Arguments pertaining to which model/config/tokenizer we are going to fine-tune, or train from scratch.
     """
 
-    model_name_or_path: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": (
-                "The model checkpoint for weights initialization.Don't set if you want to train a model from scratch."
-            )
-        },
-    )
+    model_name_or_path: Optional[str] = None
+    """The model checkpoint for weights initialization.Don't set if you want to train a model from
+    scratch.
+    """
+
     model_type: Optional[str] = field(
         default=None,
         metadata={
@@ -112,54 +110,30 @@ class ModelArguments:
             + ", ".join(MODEL_TYPES)
         },
     )
-    config_overrides: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": (
-                "Override some existing default config settings when a model is trained from scratch. Example: "
-                "n_embd=10,resid_pdrop=0.2,scale_attn_weights=false,summary_type=cls_index"
-            )
-        },
-    )
-    config_name: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": "Pretrained config name or path if not the same as model_name"
-        },
-    )
-    tokenizer_name: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": "Pretrained tokenizer name or path if not the same as model_name"
-        },
-    )
-    cache_dir: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": "Where do you want to store the pretrained models downloaded from huggingface.co"
-        },
-    )
-    use_fast_tokenizer: bool = field(
-        default=True,
-        metadata={
-            "help": "Whether to use one of the fast tokenizer (backed by the tokenizers library) or not."
-        },
-    )
-    model_revision: str = field(
-        default="main",
-        metadata={
-            "help": "The specific model version to use (can be a branch name, tag name or commit id)."
-        },
-    )
-    use_auth_token: bool = field(
-        default=False,
-        metadata={
-            "help": (
-                "Will use the token generated when running `huggingface-cli login` (necessary to use this script "
-                "with private models)."
-            )
-        },
-    )
+    config_overrides: Optional[str] = None
+    """Override some existing default config settings when a model is trained from scratch. 
+    Example: "n_embd=10,resid_pdrop=0.2,scale_attn_weights=false,summary_type=cls_index"
+    """
+
+    config_name: Optional[str] = None
+    """ Pretrained config name or path if not the same as model_name """
+
+    tokenizer_name: Optional[str] = None
+    """ Pretrained tokenizer name or path if not the same as model_name """
+
+    cache_dir: Optional[str] = None
+    """Where do you want to store the pretrained models downloaded from huggingface.co"""
+
+    use_fast_tokenizer: bool = flag(True)
+    """Whether to use one of the fast tokenizer (backed by the tokenizers library) or not."""
+
+    model_revision: str = "main"
+    """ The specific model version to use (can be a branch name, tag name or commit id)."""
+
+    use_auth_token: bool = False
+    """Will use the token generated when running `huggingface-cli login` (necessary to use this 
+    script with private models).
+    """
 
     def __post_init__(self):
         if self.config_overrides is not None and (
@@ -176,72 +150,46 @@ class DataTrainingArguments:
     Arguments pertaining to what data we are going to input our model for training and eval.
     """
 
-    dataset_name: Optional[str] = field(
-        default=None,
-        metadata={"help": "The name of the dataset to use (via the datasets library)."},
-    )
-    dataset_config_name: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": "The configuration name of the dataset to use (via the datasets library)."
-        },
-    )
-    train_file: Optional[str] = field(
-        default=None, metadata={"help": "The input training data file (a text file)."}
-    )
-    validation_file: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": "An optional input evaluation data file to evaluate the perplexity on (a text file)."
-        },
-    )
-    max_train_samples: Optional[int] = field(
-        default=None,
-        metadata={
-            "help": (
-                "For debugging purposes or quicker training, truncate the number of training examples to this "
-                "value if set."
-            )
-        },
-    )
-    max_eval_samples: Optional[int] = field(
-        default=None,
-        metadata={
-            "help": (
-                "For debugging purposes or quicker training, truncate the number of evaluation examples to this "
-                "value if set."
-            )
-        },
-    )
+    dataset_name: Optional[str] = None
+    """The name of the dataset to use (via the datasets library)."""
 
-    block_size: Optional[int] = field(
-        default=None,
-        metadata={
-            "help": (
-                "Optional input sequence length after tokenization. "
-                "The training dataset will be truncated in block of this size for training. "
-                "Default to the model max input length for single sentence inputs (take into account special tokens)."
-            )
-        },
-    )
-    overwrite_cache: bool = field(
-        default=False,
-        metadata={"help": "Overwrite the cached training and evaluation sets"},
-    )
-    validation_split_percentage: Optional[int] = field(
-        default=5,
-        metadata={
-            "help": "The percentage of the train set used as validation set in case there's no validation split"
-        },
-    )
-    preprocessing_num_workers: Optional[int] = field(
-        default=None,
-        metadata={"help": "The number of processes to use for the preprocessing."},
-    )
-    keep_linebreaks: bool = field(
-        default=True,
-        metadata={"help": "Whether to keep line breaks when using TXT files or not."},
-    )
+    dataset_config_name: Optional[str] = None
+    """The configuration name of the dataset to use (via the datasets library)."""
+
+    train_file: Optional[str] = None
+    """The input training data file (a text file)."""
+
+    validation_file: Optional[str] = None
+    """An optional input evaluation data file to evaluate the perplexity on (a text file)."""
+
+    max_train_samples: Optional[int] = None
+    """For debugging purposes or quicker training, truncate the number of training examples to
+    this value if set."""
+
+    max_eval_samples: Optional[int] = None
+    """For debugging purposes or quicker training, truncate the number of evaluation examples to
+    this value if set.
+    """
+
+    block_size: Optional[int] = None
+    """Optional input sequence length after tokenization. 
+    The training dataset will be truncated in block of this size for training.
+    Default to the model max input length for single sentence inputs (take into account special
+    tokens).
+    """
+
+    overwrite_cache: bool = False
+    """Overwrite the cached training and evaluation sets"""
+
+    validation_split_percentage: Optional[int] = 5
+    """The percentage of the train set used as validation set in case there's no validation split.
+    """
+
+    preprocessing_num_workers: Optional[int] = None
+    """The number of processes to use for the preprocessing."""
+
+    keep_linebreaks: bool = True
+    """Whether to keep line breaks when using TXT files or not."""
 
     def __post_init__(self):
         if (
@@ -266,22 +214,33 @@ def _raise_if_bad_extension(file_path: str, attr_name: str):
 
 
 def parse_args() -> tuple[ModelArguments, DataTrainingArguments, TrainingArguments]:
-
-    parser = HfArgumentParser(
-        (ModelArguments, DataTrainingArguments, TrainingArguments)
+    parser = simple_parsing.ArgumentParser(
+        description=__doc__, add_config_path_arg=True
     )
-    training_args: TrainingArguments
+    parser.add_arguments(ModelArguments, dest="model")
+    parser.add_arguments(DataTrainingArguments, dest="data")
+    parser.add_arguments(TrainingArguments, dest="training")
+
     model_args: ModelArguments
     data_args: DataTrainingArguments
+    training_args: TrainingArguments
+
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
+        parser = HfArgumentParser(
+            (ModelArguments, DataTrainingArguments, TrainingArguments)
+        )
         # If we pass only one argument to the script and it's the path to a json file,
         # let's parse it to get our arguments.
         model_args, data_args, training_args = parser.parse_json_file(
             json_file=os.path.abspath(sys.argv[1])
         )
     else:
-        model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-    training_args.optim
+        args = parser.parse_args()
+        # model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+        model_args = args.model
+        data_args = args.data
+        training_args = args.training
+
     return model_args, data_args, training_args
 
 
@@ -335,7 +294,10 @@ class CustomTrainer(Trainer):
             optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(
                 self.args
             )
+            ### NEW CODE:
             optimizer_cls = MuAdamW
+            print(f"Using MuP optimizer: {optimizer_cls}")
+            ###
 
             if self.sharded_ddp == ShardedDDPOption.SIMPLE:
                 from transformers.trainer import OSS  # type: ignore
@@ -576,7 +538,7 @@ def run(
         #     logger.info(
         #         f"Training new model from scratch - Total size={n_params/2**20:.2f}M params"
         #     )
-
+        # FIXME:
         model = get_gpt2_model(config, model_type=mutransformers.GPT2LMHeadModel)
         n_params = sum(
             dict((p.data_ptr(), p.numel()) for p in model.parameters()).values()
