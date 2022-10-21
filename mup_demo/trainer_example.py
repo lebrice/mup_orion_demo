@@ -30,6 +30,8 @@ accelerate launch mup_demo/trainer_example.py \
     # --resume_from_checkpoint=test-clm
 ```
 """
+from __future__ import annotations
+
 # You can also adapt this script on your own causal language modeling task. Pointers for this are left as comments.
 
 import logging
@@ -65,6 +67,8 @@ from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
 from datasets import DatasetDict
 
+from mup_demo.model import get_gpt2_model
+
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 # check_min_version("4.24.0.dev0")
 
@@ -78,6 +82,13 @@ logger = logging.getLogger(__name__)
 
 MODEL_CONFIG_CLASSES = list(MODEL_FOR_CAUSAL_LM_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
+
+# TODO: Could try to add the mup-variants in these lists here?
+import mutransformers
+from mutransformers import GPT2LMHeadModel, GPT2Config
+
+MODEL_CONFIG_CLASSES[MODEL_CONFIG_CLASSES.index(transformers.GPT2Config)] = GPT2Config
+CONFIG_MAPPING["gpt2"] = GPT2Config
 
 
 @dataclass
@@ -243,25 +254,18 @@ class DataTrainingArguments:
             )
         else:
             if self.train_file is not None:
-                extension = self.train_file.split(".")[-1]
-                assert extension in [
-                    "csv",
-                    "json",
-                    "txt",
-                ], "`train_file` should be a csv, a json or a txt file."
+                _raise_if_bad_extension(self.train_file, "train_file")
             if self.validation_file is not None:
-                extension = self.validation_file.split(".")[-1]
-                assert extension in [
-                    "csv",
-                    "json",
-                    "txt",
-                ], "`validation_file` should be a csv, a json or a txt file."
+                _raise_if_bad_extension(self.validation_file, "validation_file")
 
 
-def main():
-    # See all possible arguments in src/transformers/training_args.py
-    # or by passing the --help flag to this script.
-    # We now keep distinct sets of args, for a cleaner separation of concerns.
+def _raise_if_bad_extension(file_path: str, attr_name: str):
+    extension = file_path.split(".")[-1]
+    if extension not in ["csv", "json", "txt"]:
+        raise ValueError(f"`{attr_name}` should be a csv, json or txt file.")
+
+
+def parse_args() -> tuple[ModelArguments, DataTrainingArguments, TrainingArguments]:
 
     parser = HfArgumentParser(
         (ModelArguments, DataTrainingArguments, TrainingArguments)
@@ -277,14 +281,100 @@ def main():
         )
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+    training_args.optim
+    return model_args, data_args, training_args
 
+
+def main():
+    # See all possible arguments in src/transformers/training_args.py
+    # or by passing the --help flag to this script.
+    # We now keep distinct sets of args, for a cleaner separation of concerns.
+    model_args, data_args, training_args = parse_args()
     return run(model_args=model_args, data_args=data_args, training_args=training_args)
+
+
+from transformers.trainer import (
+    is_sagemaker_mp_enabled,
+    ALL_LAYERNORM_LAYERS,
+    get_parameter_names,
+    ShardedDDPOption,
+)
+from torch import nn
+
+
+class CustomTrainer(Trainer):
+    def create_optimizer(self):
+        # NOTE: Copying all of this just to be certain that it uses the MuAdamW optimizer.
+        from mup import MuAdamW
+
+        self.hp_search_backend
+        opt_model = self.model_wrapped if is_sagemaker_mp_enabled() else self.model
+
+        if self.optimizer is None:
+            decay_parameters = get_parameter_names(opt_model, ALL_LAYERNORM_LAYERS)
+            decay_parameters = [name for name in decay_parameters if "bias" not in name]
+            optimizer_grouped_parameters = [
+                {
+                    "params": [
+                        p
+                        for n, p in opt_model.named_parameters()
+                        if n in decay_parameters
+                    ],
+                    "weight_decay": self.args.weight_decay,
+                },
+                {
+                    "params": [
+                        p
+                        for n, p in opt_model.named_parameters()
+                        if n not in decay_parameters
+                    ],
+                    "weight_decay": 0.0,
+                },
+            ]
+
+            optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(
+                self.args
+            )
+            optimizer_cls = MuAdamW
+
+            if self.sharded_ddp == ShardedDDPOption.SIMPLE:
+                from transformers.trainer import OSS  # type: ignore
+
+                self.optimizer = OSS(
+                    params=optimizer_grouped_parameters,
+                    optim=optimizer_cls,
+                    **optimizer_kwargs,
+                )
+            else:
+                self.optimizer = optimizer_cls(
+                    optimizer_grouped_parameters, **optimizer_kwargs
+                )
+                if optimizer_cls.__name__ == "Adam8bit":
+                    import bitsandbytes  # type: ignore
+
+                    manager = bitsandbytes.optim.GlobalOptimManager.get_instance()
+
+                    for module in opt_model.modules():
+                        if isinstance(module, nn.Embedding):
+                            manager.register_module_override(
+                                module, "weight", {"optim_bits": 32}
+                            )
+                            logger.debug(
+                                f"bitsandbytes: will optimize {module} in fp32"
+                            )
+
+        if is_sagemaker_mp_enabled():
+            from transformers.trainer import smp  # type: ignore
+
+            self.optimizer = smp.DistributedOptimizer(self.optimizer)
+
+        return self.optimizer
 
 
 def run(
     model_args: ModelArguments,
     data_args: DataTrainingArguments,
-    trining_args: TrainingArguments,
+    training_args: TrainingArguments,
 ):
     # Sending telemetry. Tracking the example usage helps us better allocate resources to maintain them. The
     # information sent is the one passed as arguments along with your Python/PyTorch versions.
@@ -303,7 +393,6 @@ def run(
     transformers.utils.logging.set_verbosity(log_level)
     transformers.utils.logging.enable_default_handler()
     transformers.utils.logging.enable_explicit_format()
-
     # Log on each process the small summary:
     logger.warning(
         f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}"
@@ -425,6 +514,7 @@ def run(
         "revision": model_args.model_revision,
         "use_auth_token": True if model_args.use_auth_token else None,
     }
+    # TODO: Make this cleaner. Currently just overwriting the config with the mup variant.
     if model_args.config_name:
         config = AutoConfig.from_pretrained(model_args.config_name, **config_kwargs)
     elif model_args.model_name_or_path:
@@ -433,7 +523,11 @@ def run(
         )
     else:
         assert model_args.model_type is not None
-        config = CONFIG_MAPPING[model_args.model_type]()
+        # FIXME: Make this cleaner. Currently just overwriting the config with the mup variant.
+        # config = CONFIG_MAPPING[model_args.model_type]()
+        config = mutransformers.GPT2Config(**config_kwargs)
+        assert isinstance(config, mutransformers.GPT2Config)
+
         logger.warning("You are instantiating a new config instance from scratch.")
         if model_args.config_overrides is not None:
             logger.info(f"Overriding config: {model_args.config_overrides}")
@@ -460,28 +554,39 @@ def run(
             "You can do it from another script, save it, and load it from here, using --tokenizer_name."
         )
 
-    if model_args.model_name_or_path:
-        model = AutoModelForCausalLM.from_pretrained(
-            model_args.model_name_or_path,
-            from_tf=bool(".ckpt" in model_args.model_name_or_path),
-            config=config,
-            cache_dir=model_args.cache_dir,
-            revision=model_args.model_revision,
-            use_auth_token=True if model_args.use_auth_token else None,
-        )
-    else:
-        model = AutoModelForCausalLM.from_config(config)
+    from transformers import PreTrainedModel
+
+    # TODO: Cleanly add support for using the MuP equivalent.
+    def make_model():
+        model: PreTrainedModel
+        # if model_args.model_name_or_path:
+        #     model = AutoModelForCausalLM.from_pretrained(
+        #         model_args.model_name_or_path,
+        #         from_tf=bool(".ckpt" in model_args.model_name_or_path),
+        #         config=config,
+        #         cache_dir=model_args.cache_dir,
+        #         revision=model_args.model_revision,
+        #         use_auth_token=True if model_args.use_auth_token else None,
+        #     )
+        # else:
+        #     model = AutoModelForCausalLM.from_config(config)
+        #     n_params = sum(
+        #         dict((p.data_ptr(), p.numel()) for p in model.parameters()).values()
+        #     )
+        #     logger.info(
+        #         f"Training new model from scratch - Total size={n_params/2**20:.2f}M params"
+        #     )
+
+        model = get_gpt2_model(config, model_type=mutransformers.GPT2LMHeadModel)
         n_params = sum(
             dict((p.data_ptr(), p.numel()) for p in model.parameters()).values()
         )
-        logger.info(
-            f"Training new model from scratch - Total size={n_params/2**20:.2f}M params"
-        )
+        logger.info(f"Model size={n_params/2**20:.2f}M params")
+        model.resize_token_embeddings(len(tokenizer))
 
-    from transformers import PreTrainedModel
+        return model
 
-    model: PreTrainedModel
-    model.resize_token_embeddings(len(tokenizer))
+    # from mutransformers import
 
     # Preprocessing the datasets.
     # First we tokenize all the texts.
@@ -602,8 +707,8 @@ def run(
             return metric.compute(predictions=preds, references=labels)
 
     # Initialize our Trainer
-    trainer = Trainer(
-        model=model,
+    trainer = CustomTrainer(
+        model_init=make_model,
         args=training_args,
         train_dataset=train_dataset if training_args.do_train else None,
         eval_dataset=eval_dataset if training_args.do_eval else None,

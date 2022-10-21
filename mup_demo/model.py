@@ -78,7 +78,7 @@ class ScalableBertModel(BertForSequenceClassification):
 
 
 def get_bert_model(
-    config: BertConfig, model_class: type[BertModelType] = BertForSequenceClassification
+    config: BertConfig, model_type: type[BertModelType]
 ) -> BertModelType:
     base_config = _replace(
         config,
@@ -92,15 +92,12 @@ def get_bert_model(
         intermediate_size=300,
         num_attention_heads=5,
     )
+    # Create the base and delta models using empty weights, so they don't take any memory.
     with init_empty_weights():
-        base_model = model_class(base_config)
-        delta_model = model_class(delta_config)
+        base_model = model_type(base_config)
+        delta_model = model_type(delta_config)
 
-    # define a base model
-    with init_empty_weights():
-        base_model = model_class(base_config)
-        delta_model = model_class(delta_config)
-    target_model = model_class(config=config)
+    target_model = model_type(config=config)
 
     base_shapes = make_base_shapes(base_model, delta_model, savefile="bert256.bsh")
     # set base shapes
@@ -111,3 +108,49 @@ def get_bert_model(
     print(f"Total parameters in the delta model:  {delta_model.num_parameters()}")
     print(f"Total parameters in the target model: {target_model.num_parameters()}")
     return target_model
+
+
+from mutransformers import GPT2Config, GPT2LMHeadModel
+from functools import partial
+
+GPT2ModelType = TypeVar("GPT2ModelType", bound=GPT2LMHeadModel)
+
+
+def get_gpt2_model(
+    config: GPT2Config,
+    model_type: type[GPT2ModelType],
+    readout_zero_init=False,
+    query_zero_init=False,
+) -> GPT2ModelType:
+    assert isinstance(config, GPT2Config)
+    base_config = _replace(
+        config,
+        n_head=4,
+        # activation_function="relu",
+        n_embd=256,
+        # n_layer=2,
+    )
+    delta_config = _replace(
+        config,
+        n_head=5,
+        # activation_function="relu",
+        n_embd=200,
+        # n_layer=2,
+    )
+    # with init_empty_weights():
+    base_model = model_type(config=base_config)
+    delta_model = model_type(config=delta_config)
+
+    filename = "gpt2.bsh"
+    base_shapes = make_base_shapes(base_model, delta_model, savefile=filename)
+
+    model = model_type(config=config)
+    set_base_shapes(model, base_shapes)
+    model.apply(
+        partial(
+            model._init_weights,
+            readout_zero_init=readout_zero_init,
+            query_zero_init=query_zero_init,
+        )
+    )
+    return model
