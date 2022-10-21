@@ -23,10 +23,9 @@ Example command:
 ```
 accelerate launch mup_demo/trainer_example.py \
     --model_name_or_path gpt2 --dataset_name wikitext \
-    --dataset_config_name wikitext-2-raw-v1 \
-    --per_device_trai:n_batch_size 8 --per_device_eval_batch_size 8 \
-    --do_train --do_eval --output_dir test-clm \
-    # --resume_from_checkpoint=test-clm
+    --dataset_config_name wikitext-2-raw-v1 --per_device_train_batch_size 4 \
+    --per_device_eval_batch_size 8 --ddp_find_unused_parameters=False \
+    --do_train --do_eval --output_dir test_run
 ```
 """
 from __future__ import annotations
@@ -59,6 +58,7 @@ from transformers import (
     default_data_collator,
     is_torch_tpu_available,
     set_seed,
+    AutoModelForCausalLM,
 )
 from transformers.testing_utils import CaptureLogger
 from transformers.trainer import (
@@ -69,7 +69,7 @@ from transformers.trainer import (
 )
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils.versions import require_version
-
+import mutransformers
 from mup_demo.model import get_gpt2_model
 
 # You can also adapt this script on your own causal language modeling task. Pointers for this are left as comments.
@@ -92,8 +92,12 @@ MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 # TODO: Could try to add the mup-variants in these lists here?
 
 
-MODEL_CONFIG_CLASSES[MODEL_CONFIG_CLASSES.index(transformers.GPT2Config)] = GPT2Config
-CONFIG_MAPPING["gpt2"] = GPT2Config
+MODEL_CONFIG_CLASSES[
+    MODEL_CONFIG_CLASSES.index(transformers.GPT2Config)
+] = mutransformers.GPT2Config
+CONFIG_MAPPING["gpt2"] = mutransformers.GPT2Config
+CONFIG_MAPPING["bert"] = mutransformers.BertConfig
+CONFIG_MAPPING["roberta"] = mutransformers.RobertaConfig
 
 
 @dataclass
@@ -212,6 +216,8 @@ def parse_args() -> tuple[ModelArguments, DataTrainingArguments, TrainingArgumen
     parser = simple_parsing.ArgumentParser(description=__doc__, add_config_path_arg=True)
     parser.add_arguments(ModelArguments, dest="model")
     parser.add_arguments(DataTrainingArguments, dest="data")
+    # TODO: The docstrings on these classes are gynormous. Should probably take only the first few
+    # lines.
     parser.add_arguments(TrainingArguments, dest="training")
 
     model_args: ModelArguments
@@ -243,7 +249,33 @@ def main():
     return run(model_args=model_args, data_args=data_args, training_args=training_args)
 
 
+# TODO: Very interesting stuff here!
+from transformers.trainer import BestRun, HPSearchBackend, default_hp_space
+
+
+def run_hp_search_orion(trainer, n_trials: int, direction: str, **kwargs) -> BestRun:
+    """TODO: Implement this to add Orion as a source for HParam tuning."""
+    ...
+
+
+from typing import Optional, Callable
+
+
 class CustomTrainer(Trainer):
+    def hyperparameter_search(
+        self,
+        hp_space: Callable[["optuna.Trial"], dict[str, float]] | None = None,
+        compute_objective: Optional[Callable[[dict[str, float]], float]] = None,
+        n_trials: int = 20,
+        direction: str = "minimize",
+        backend: Optional[Union["str", HPSearchBackend]] = None,
+        hp_name: Optional[Callable[["optuna.Trial"], str]] = None,
+        **kwargs,
+    ) -> BestRun:
+        return super().hyperparameter_search(
+            hp_space, compute_objective, n_trials, direction, backend, hp_name, **kwargs
+        )
+
     def create_optimizer(self):
         # NOTE: Copying all of this just to be certain that it uses the MuAdamW optimizer.
         from mup import MuAdamW
@@ -444,19 +476,21 @@ def run(
         "revision": model_args.model_revision,
         "use_auth_token": True if model_args.use_auth_token else None,
     }
+
     # TODO: Make this cleaner. Currently just overwriting the config with the mup variant.
-    if model_args.config_name:
+    if (model_args.config_name or model_args.model_name_or_path) == "gpt2":
+        config = mutransformers.GPT2Config.from_pretrained("gpt2", **config_kwargs)
+    elif model_args.config_name:
         config = AutoConfig.from_pretrained(model_args.config_name, **config_kwargs)
     elif model_args.model_name_or_path:
         config = AutoConfig.from_pretrained(model_args.model_name_or_path, **config_kwargs)
-    else:
-        assert model_args.model_type is not None
-        # FIXME: Make this cleaner. Currently just overwriting the config with the mup variant.
-        # config = CONFIG_MAPPING[model_args.model_type]()
+    elif model_args.model_type == "gpt2":
         config = mutransformers.GPT2Config(**config_kwargs)
         assert isinstance(config, mutransformers.GPT2Config)
-
+    else:
+        assert model_args.model_type is not None
         logger.warning("You are instantiating a new config instance from scratch.")
+        config = CONFIG_MAPPING[model_args.model_type]()
         if model_args.config_overrides is not None:
             logger.info(f"Overriding config: {model_args.config_overrides}")
             config.update_from_string(model_args.config_overrides)
@@ -483,29 +517,38 @@ def run(
     from transformers import PreTrainedModel
 
     # TODO: Cleanly add support for using the MuP equivalent.
-    def make_model():
+    def make_model(trial=None):
+        print(f"Trial: {trial}")
+
         model: PreTrainedModel
-        # if model_args.model_name_or_path:
-        #     model = AutoModelForCausalLM.from_pretrained(
-        #         model_args.model_name_or_path,
-        #         from_tf=bool(".ckpt" in model_args.model_name_or_path),
-        #         config=config,
-        #         cache_dir=model_args.cache_dir,
-        #         revision=model_args.model_revision,
-        #         use_auth_token=True if model_args.use_auth_token else None,
-        #     )
-        # else:
-        #     model = AutoModelForCausalLM.from_config(config)
-        #     n_params = sum(
-        #         dict((p.data_ptr(), p.numel()) for p in model.parameters()).values()
-        #     )
-        #     logger.info(
-        #         f"Training new model from scratch - Total size={n_params/2**20:.2f}M params"
-        #     )
+        if isinstance(config, mutransformers.GPT2Config):
+            print("Creating a MuP GPT2 model.")
+            model = get_gpt2_model(config, model_type=mutransformers.GPT2LMHeadModel)
+            n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
+            logger.info(f"Model size={n_params/2**20:.2f}M params")
+        elif isinstance(config, mutransformers.RobertaConfig):
+            print("Creating a MuP Roberta model.")
+            raise NotImplementedError(f"TODO: Get the mup variant of the Roberta model.")
+            # model = get_roberta_model(config, model_type=mutransformers.RobertaForCausalLM)
+            # n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
+            # logger.info(f"Model size={n_params/2**20:.2f}M params")
+        elif model_args.model_name_or_path:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_args.model_name_or_path,
+                from_tf=bool(".ckpt" in model_args.model_name_or_path),
+                config=config,
+                cache_dir=model_args.cache_dir,
+                revision=model_args.model_revision,
+                use_auth_token=True if model_args.use_auth_token else None,
+            )
+        else:
+            model = AutoModelForCausalLM.from_config(config)
+            n_params = sum(dict((p.data_ptr(), p.numel()) for p in model.parameters()).values())
+            logger.info(
+                f"Training new model from scratch - Total size={n_params/2**20:.2f}M params"
+            )
         # FIXME:
-        model = get_gpt2_model(config, model_type=mutransformers.GPT2LMHeadModel)
-        n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
-        logger.info(f"Model size={n_params/2**20:.2f}M params")
+
         model.resize_token_embeddings(len(tokenizer))
 
         return model

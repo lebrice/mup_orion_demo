@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import collections
+import typing
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +37,9 @@ from transformers import get_linear_schedule_with_warmup, set_seed
 from mup import MuAdamW
 from mup_demo.data import GlueDataModule
 from mup_demo.model import HParams, _replace, get_bert_model
+
+if typing.TYPE_CHECKING:
+    from mup_demo.tune import TrainingFunctionOutput
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -241,7 +245,7 @@ def validation_epoch(
     epoch_metric: EvaluationModule,
     accelerator: Accelerator,
     epoch: int,
-):
+) -> TrainingFunctionOutput:
     model.eval()
     prediction_counter = collections.Counter()
     total_loss = 0.0
@@ -265,10 +269,11 @@ def validation_epoch(
     accelerator.print(f"Evaluation predictions: {prediction_counter}")
     prediction_counter.clear()
 
+    result = {"loss": total_loss}
     epoch_metric_values = epoch_metric.compute()
     assert isinstance(epoch_metric_values, dict)
-    epoch_metric_values.setdefault("loss", total_loss)
-    return epoch_metric_values
+    result.update(epoch_metric_values)
+    return result
 
 
 def main():
