@@ -273,7 +273,7 @@ def validation_epoch(
             (predictions, batch["labels"], outputs.loss)
         )
         prediction_counter.update(predictions.tolist())
-        total_loss += loss.item()
+        total_loss += loss.sum().item()
         epoch_metric.add_batch(
             predictions=predictions,
             references=references,

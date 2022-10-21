@@ -19,16 +19,17 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import json
 from mup_demo.data import YelpDataModule
 from accelerate import Accelerator
-from mup_demo.utils import suggest_trial
 from accelerate.accelerator import AcceleratedScheduler
 from torch.optim.lr_scheduler import _LRScheduler as LRScheduler
 from transformers import set_seed
 from mup_demo.model import get_bert_model
 from transformers import get_linear_schedule_with_warmup
 import tqdm
-
+from typing_extensions import NotRequired
+from typing import Callable
 from mup_demo.train import training_function, Config
 from mup_demo.model import HParams
+from mup_demo.utils import suggest_trial, is_main_process
 
 
 class Batch(TypedDict):
@@ -132,7 +133,16 @@ def train(
     return epoch_metrics
 
 
-def tune():
+class TrainingFunctionOutput(TypedDict):
+    loss: float
+    accuracy: NotRequired[float]
+
+
+def tune(
+    training_function: Callable[
+        [HParams, Config], TrainingFunctionOutput
+    ] = training_function
+):
     """Perform an HPO sweep using smaller transformer models, and extract the best HPO parameters
     found. Then, use those parameters to train a very large model.
     """
@@ -160,9 +170,8 @@ def tune():
     )
 
     while not experiment.is_done:
-        accelerator = Accelerator()
-        trial = suggest_trial(experiment, accelerator=accelerator)
-        print(f"Worker {accelerator.process_index} got hparams: {trial.params}")
+        trial = suggest_trial(experiment)
+        print(f"Experiment suggested hparams: {trial.params}")
         hparams = HParams(**trial.params)
 
         # Use the 'base' config, but replace the log_dir with the trial's working_dir.
@@ -172,18 +181,18 @@ def tune():
         metrics = training_function(hparams, config_for_this_trial)
         # metrics = train(hparams, config_for_this_trial)
 
-        if accelerator.is_main_process:
+        if is_main_process():
             print(f"Trial {trial.id} finished with metrics: {metrics}")
             experiment.observe(
                 trial,
                 # NOTE: Put the loss as the first objective, so that Orion uses it. Also keep the
                 # other metrics as additional objectives.
                 [dict(name="valid_loss", value=metrics["loss"], type="objective")]
-                + [
-                    dict(name=key, value=value, type="objective")
-                    for key, value in metrics.items()
-                    if key != "loss"
-                ],
+                # + [
+                #     dict(name=key, value=value, type="objective")
+                #     for key, value in metrics.items()
+                #     if key != "loss"
+                # ],
             )
 
     # Idea: Could we add something like a 'best_trial_so_far' property/method on the Experiment
