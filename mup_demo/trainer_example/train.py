@@ -29,8 +29,8 @@ accelerate launch mup_demo/trainer_example.py \
 ```
 """
 from __future__ import annotations
-import functools
 
+import functools
 import logging
 import math
 import os
@@ -38,9 +38,7 @@ import sys
 from dataclasses import dataclass, field
 from itertools import chain
 from typing import Any, Callable
-from transformers import PretrainedConfig, Trainer
 
-from torch import Tensor
 import datasets
 import evaluate
 import mutransformers
@@ -48,38 +46,37 @@ import simple_parsing
 import transformers
 from datasets import DatasetDict
 from datasets.load import load_dataset
-from transformers import EvalPrediction
 from simple_parsing.helpers import flag
+from torch import Tensor
+from torch.utils.data import Dataset
 from transformers import (
     CONFIG_MAPPING,
     MODEL_FOR_CAUSAL_LM_MAPPING,
     AutoConfig,
+    AutoModelForCausalLM,
     AutoTokenizer,
+    EvalPrediction,
     HfArgumentParser,
+    PretrainedConfig,
+    PreTrainedModel,
+    PreTrainedTokenizerBase,
+    Trainer,
     TrainingArguments,
     default_data_collator,
     is_torch_tpu_available,
     set_seed,
-    AutoModelForCausalLM,
 )
-
-from torch.utils.data import Dataset
 from transformers.testing_utils import CaptureLogger
 from transformers.trainer_utils import get_last_checkpoint
-from transformers.utils.versions import require_version
-import mutransformers
+
 from mup_demo.model import get_gpt2_model
+from mup_demo.trainer_example.mup_trainer_plugin import MupTrainerPlugin
+from mup_demo.trainer_example.orion_trainer_plugin import OrionTrainer
 
-# You can also adapt this script on your own causal language modeling task. Pointers for this are left as comments.
 
+class CustomTrainer(OrionTrainer, MupTrainerPlugin):
+    pass
 
-# Will error if the minimal version of Transformers is not installed. Remove at your own risks.
-# check_min_version("4.24.0.dev0")
-
-require_version(
-    "datasets>=1.8.0",
-    "To fix: pip install -r examples/pytorch/language-modeling/requirements.txt",
-)
 
 logger = logging.getLogger(__name__)
 
@@ -424,14 +421,6 @@ def setup_trainer(
     return trainer
 
 
-from mup_demo.trainer_example.orion_trainer_plugin import OrionTrainer
-from mup_demo.trainer_example.mup_trainer_plugin import MupTrainerPlugin
-
-
-class CustomTrainer(OrionTrainer, MupTrainerPlugin):
-    pass
-
-
 def find_last_checkpoint(training_args: TrainingArguments) -> str | None:
     last_checkpoint = None
     if (
@@ -440,6 +429,7 @@ def find_last_checkpoint(training_args: TrainingArguments) -> str | None:
         and not training_args.overwrite_output_dir
     ):
         last_checkpoint = get_last_checkpoint(training_args.output_dir)
+
         if last_checkpoint is None and len(os.listdir(training_args.output_dir)) > 0:
             raise ValueError(
                 f"Output directory ({training_args.output_dir}) already exists and is not empty. "
@@ -578,11 +568,6 @@ def _setup_logging(training_args: TrainingArguments):
     )
 
 
-from transformers import PreTrainedModel
-
-from transformers import PreTrainedTokenizerBase
-
-
 def _get_tokenizer(
     model_args: ModelArguments, tokenizer_kwargs: dict[str, Any]
 ) -> PreTrainedTokenizerBase:
@@ -600,69 +585,23 @@ def _get_tokenizer(
     return tokenizer
 
 
-def get_model_init_function(
-    config: transformers.PretrainedConfig,
-    model_args: ModelArguments,
-    tokenizer: PreTrainedTokenizerBase,
-) -> Callable[[dict | None], PreTrainedModel]:
-    # TODO: Cleanly add support for using the MuP equivalent.
-
-    def make_model(trial=None):
-        print(f"Trial: {trial}")
-
-        model: PreTrainedModel
-        if isinstance(config, mutransformers.GPT2Config):
-            print("Creating a MuP GPT2 model.")
-            model = get_gpt2_model(config, model_type=mutransformers.GPT2LMHeadModel)
-            n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
-            logger.info(f"Model size={n_params/2**20:.2f}M params")
-        elif isinstance(config, mutransformers.RobertaConfig):
-            print("Creating a MuP Roberta model.")
-            raise NotImplementedError(f"TODO: Get the mup variant of the Roberta model.")
-            # model = get_roberta_model(config, model_type=mutransformers.RobertaForCausalLM)
-            # n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
-            # logger.info(f"Model size={n_params/2**20:.2f}M params")
-        elif model_args.model_name_or_path:
-            model = AutoModelForCausalLM.from_pretrained(
-                model_args.model_name_or_path,
-                from_tf=bool(".ckpt" in model_args.model_name_or_path),
-                config=config,
-                cache_dir=model_args.cache_dir,
-                revision=model_args.model_revision,
-                use_auth_token=True if model_args.use_auth_token else None,
-            )
-        else:
-            model = AutoModelForCausalLM.from_config(config)
-            n_params = sum(dict((p.data_ptr(), p.numel()) for p in model.parameters()).values())
-            logger.info(
-                f"Training new model from scratch - Total size={n_params/2**20:.2f}M params"
-            )
-        # FIXME:
-
-        model.resize_token_embeddings(len(tokenizer))
-
-        return model
-
-    return make_model
-
-
 def make_model(
     trial: Any | None,
     config: transformers.PretrainedConfig,
     model_args: ModelArguments,
     tokenizer: PreTrainedTokenizerBase,
 ) -> PreTrainedModel:
-    print(f"Trial: {trial}")
+    logger.debug(f"Trial: {trial}")
 
     model: PreTrainedModel
     if isinstance(config, mutransformers.GPT2Config):
-        print("Creating a MuP GPT2 model.")
+        logger.info("Creating a MuP GPT2 model.")
         model = get_gpt2_model(config, model_type=mutransformers.GPT2LMHeadModel)
         n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
         logger.info(f"Model size={n_params/2**20:.2f}M params")
     elif isinstance(config, mutransformers.RobertaConfig):
-        print("Creating a MuP Roberta model.")
-        raise NotImplementedError(f"TODO: Get the mup variant of the Roberta model.")
+        logger.info("Creating a MuP Roberta model.")
+        raise NotImplementedError("TODO: Get the mup variant of the Roberta model.")
         # model = get_roberta_model(config, model_type=mutransformers.RobertaForCausalLM)
         # n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
         # logger.info(f"Model size={n_params/2**20:.2f}M params")
@@ -677,7 +616,7 @@ def make_model(
         )
     else:
         model = AutoModelForCausalLM.from_config(config)
-        n_params = sum(dict((p.data_ptr(), p.numel()) for p in model.parameters()).values())
+        n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
         logger.info(f"Training new model from scratch - Total size={n_params/2**20:.2f}M params")
     # FIXME:
 
