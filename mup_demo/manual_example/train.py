@@ -35,11 +35,11 @@ from torch.utils.data import DataLoader
 from transformers import get_linear_schedule_with_warmup, set_seed
 
 from mup import MuAdamW
-from mup_demo.data import GlueDataModule
+from mup_demo.manual_example.data import GlueDataModule
 from mup_demo.model import HParams, _replace, get_bert_model
 
 if typing.TYPE_CHECKING:
-    from mup_demo.tune import TrainingFunctionOutput
+    from mup_demo.manual_example.tune import TrainingFunctionOutput
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 

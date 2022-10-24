@@ -1,100 +1,12 @@
 import contextlib
 import functools
 import os
-import pickle
-from pathlib import Path
-from typing import Callable, TypeVar
+from typing import Callable, TypeVar, cast
 
-import torch
-from accelerate import Accelerator
 from orion.client import ExperimentClient
 from orion.client.experiment import TrialCM
 from orion.core.worker.trial import Trial
 from typing_extensions import ParamSpec
-
-
-def suggest_trial_manual(experiment: ExperimentClient) -> Trial:
-    if not in_ddp_context():
-        # Not in a DDP context.
-        # todo: this isn't typed.
-        trial = experiment.suggest()
-        # TODO: https://github.com/Epistimio/orion/issues/1009
-        assert isinstance(trial, (TrialCM, Trial))
-        if isinstance(trial, TrialCM):
-            return trial._cm_trial
-        return trial
-
-    local_rank = int(os.environ["RANK"])
-    master_addr = os.environ["MASTER_ADDR"]
-    master_port = int(os.environ["MASTER_PORT"])
-    filename = Path(experiment.working_dir) / f"_trial_{master_addr}_{master_port}.pkl"
-    # print(f"WORKER {local_rank}: Filename: {filename}")
-
-    with main_process_first():
-        if not filename.exists() and local_rank == 0:
-            # Main worker!
-            trial = experiment.suggest()
-            assert isinstance(trial, (TrialCM, Trial))
-            if isinstance(trial, TrialCM):
-                trial = trial._cm_trial
-            with open(filename, "wb") as f:
-                pickle.dump(trial, f)
-        else:
-            with open(filename, "rb") as f:
-                trial = pickle.load(f)
-                assert isinstance(trial, Trial)
-
-    # Wait for everyone before removing the file.
-    wait_for_everyone()
-
-    if is_main_process:
-        if filename.exists():
-            filename.unlink()
-
-    return trial
-
-
-def suggest_trial_using_accelerator(
-    experiment: ExperimentClient, accelerator: Accelerator
-) -> Trial:
-    local_rank = get_local_rank()
-    if local_rank == -1:
-        # Not in a DDP context.
-        # todo: this isn't typed.
-        trial = experiment.suggest()
-        # TODO: https://github.com/Epistimio/orion/issues/1009
-        assert isinstance(trial, (TrialCM, Trial))
-        if isinstance(trial, TrialCM):
-            return trial._cm_trial
-        return trial
-
-    master_addr = os.environ["MASTER_ADDR"]
-    master_port = int(os.environ["MASTER_PORT"])
-    filename = Path(experiment.working_dir) / f"_trial_{master_addr}_{master_port}.pkl"
-    # print(f"WORKER {local_rank}: Filename: {filename}")
-
-    with accelerator.main_process_first():
-        if not filename.exists() and local_rank == 0:
-            # Main worker!
-            trial = experiment.suggest()
-            assert isinstance(trial, (TrialCM, Trial))
-            if isinstance(trial, TrialCM):
-                trial = trial._cm_trial
-            with open(filename, "wb") as f:
-                pickle.dump(trial, f)
-        else:
-            with open(filename, "rb") as f:
-                trial = pickle.load(f)
-                assert isinstance(trial, Trial)
-
-    # Wait for everyone before removing the file.
-    # accelerator.wait_for_everyone()
-
-    if accelerator.is_main_process:
-        if filename.exists():
-            filename.unlink()
-
-    return trial
 
 
 def in_ddp_context() -> bool:
@@ -128,30 +40,20 @@ def runs_on_main_process(function: Callable[P, OutputType]) -> Callable[P, Outpu
         # Not in a DDP context: Just return the output of the function call.
         return function
 
+    import torch.distributed as dist
+
     @functools.wraps(function)
     def wrapper(*args: P.args, **kwargs: P.kwargs):
-        local_rank = int(os.environ["RANK"])
-        master_addr = os.environ["MASTER_ADDR"]
-        master_port = int(os.environ["MASTER_PORT"])
-        filename = Path(f"_{function.__qualname__}_{master_addr}_{master_port}.pkl")
-        with main_process_first():
-            output: OutputType
-            if not filename.exists() and local_rank == 0:
-                # Main worker!
-                output = function(*args, **kwargs)
-                with open(filename, "wb") as f:
-                    pickle.dump(output, f)
-            else:
-                with open(filename, "rb") as f:
-                    output = pickle.load(f)
 
-        # Wait for everyone before removing the file.
-        wait_for_everyone()
-
-        if is_main_process():
-            if filename.exists():
-                filename.unlink()
-
+        if dist.get_rank() == 0:
+            # Assumes world_size of 3.
+            output = function(*args, **kwargs)  # any picklable object
+            output_buffer = [output]
+        else:
+            output_buffer = [None]
+        dist.broadcast_object_list(output_buffer, src=0)
+        outputs = cast(list[OutputType], output_buffer)
+        output = outputs[0]
         return output
 
     return wrapper
@@ -169,6 +71,8 @@ def wait_for_everyone():
     if not in_ddp_context():
         return
     try:
+        import torch
+
         torch.distributed.barrier()
     except ImportError:
         pass
