@@ -62,19 +62,16 @@ require_version(
 
 logger = logging.getLogger(__name__)
 
-
-MODEL_CONFIG_CLASSES = list(MODEL_FOR_CAUSAL_LM_MAPPING.keys())
-MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
-
 # TODO: Could try to add the mup-variants in these lists here?
 
-from .train import (
+from mup_demo.trainer_example.train import (
     parse_args,
     main,
     ModelArguments,
     DataTrainingArguments,
     CustomTrainer,
     setup_trainer,
+    _setup_logging,
 )
 
 
@@ -83,11 +80,32 @@ def tune():
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
     model_args, data_args, training_args = parse_args()
+
+    # Setup logging
+    _setup_logging(training_args)
+
     trainer = setup_trainer(
         model_args=model_args, data_args=data_args, training_args=training_args
     )
-    best_run = trainer.hyperparameter_search(n_trials=10, direction="maximize", backend="orion")
+    from mup_demo.trainer_example.orion_trainer_plugin import OrionTrainer
+
+    trainer: OrionTrainer
+    best_run = trainer.hyperparameter_search(
+        n_trials=10,
+        direction="minimize",
+        backend="orion",
+        hp_space={
+            "learning_rate": "loguniform(1e-7, 1e-3)",
+        },
+    )
     print(best_run)
+
+    # TODO: DO something different (and better) here, much more like the manual example, with one
+    # level of abstraction above the Trainer (and re-creating the Trainer each time).
+
+    # TODO: Something like this:
+
+    # Hyper-Parameter sweep
 
 
 if __name__ == "__main__":

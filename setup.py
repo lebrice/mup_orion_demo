@@ -1,6 +1,7 @@
-from setuptools import setup
+from setuptools import setup, find_namespace_packages, find_packages
 
-file_name = "mup_demo"
+package_name = "mup_demo"
+packages = find_packages(where=package_name)
 
 # Stuff used to make this work as a pip-installable gist:
 # if __name__ == "__main__":
@@ -10,12 +11,12 @@ file_name = "mup_demo"
 #     shutil.copyfile(f"{file_name}.py", f"{file_name}/__init__.py")
 
 setup(
-    name=file_name,
+    name=package_name,
     version="0.0.1",
     description="Simple training script for testing multi-GPU stuff on the Mila cluster.",
     author="Fabrice Normandin",
     author_email="normandf@mila.quebec",
-    packages=[file_name],  # Same as name
+    packages=[package_name],  # Same as name
     python_requires=">=3.9",
     # entry_points={
     #     "console_scripts": [
