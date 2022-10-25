@@ -265,6 +265,13 @@ def main():
     else:
         trainer.create_model_card(**kwargs)
 
+    if training_args.do_eval:
+        assert metrics is not None
+        objective = metrics["eval_loss"]
+        from orion.client import report_objective
+
+        report_objective(objective, name="eval_loss")
+
     return metrics
 
 

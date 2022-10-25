@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 # TODO: Could try to add the mup-variants in these lists here?
 
 
-def tune():
+def tune_using_trainer_api():
     """Tune the hyper-parameters using the `hyperparameter_search` API of the HuggingFace Trainer.
 
     This "works", but the output directory structure is weird (might be fixable though). Also, the
@@ -69,7 +69,7 @@ def tune():
     print(best_run)
 
 
-def main():
+def tune_using_orion():
 
     # TODO: DO something different (and better) here, much more like the manual example, with one
     # level of abstraction above the Trainer (and re-creating the Trainer each time).
@@ -185,5 +185,5 @@ def _replace_fields_of(obj: ConfigType, **kwargs) -> ConfigType:
 
 
 if __name__ == "__main__":
-    # tune()
-    main()
+    # tune_using_trainer_api()
+    tune_using_orion()
