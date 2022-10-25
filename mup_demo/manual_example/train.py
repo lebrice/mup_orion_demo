@@ -14,9 +14,10 @@
 from __future__ import annotations
 
 import collections
+import functools
 import typing
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -28,6 +29,8 @@ from accelerate import Accelerator
 from accelerate.accelerator import AcceleratedOptimizer, AcceleratedScheduler
 from evaluate import EvaluationModule
 from mutransformers import BertConfig, BertForSequenceClassification
+from simple_parsing.helpers.hparams.hparam import log_uniform
+from simple_parsing.helpers.hparams.hyperparameters import HyperParameters
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import _LRScheduler
@@ -36,7 +39,7 @@ from transformers import get_linear_schedule_with_warmup, set_seed
 
 from mup import MuAdamW
 from mup_demo.manual_example.data import GlueDataModule
-from mup_demo.model import HParams, _replace, get_bert_model
+from mup_demo.model import _replace, get_bert_model
 
 if typing.TYPE_CHECKING:
     from mup_demo.manual_example.tune import TrainingFunctionOutput
@@ -45,6 +48,25 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 MAX_GPU_BATCH_SIZE = 256
 EVAL_BATCH_SIZE = 32
+
+
+@dataclass
+class HParams(HyperParameters):
+    learning_rate: float = log_uniform(1e-6, 1e-3, default=0.00005)
+    # batch_size: int = log_uniform(4, 128, default=32, base=2, discrete=True)
+    batch_size: int = 128
+    num_epochs: int = 3
+    random_seed: int = 42
+
+    model: BertConfig = field(
+        default_factory=functools.partial(
+            BertConfig,
+            hidden_size=64,
+            intermediate_size=128,
+            num_attention_heads=4,
+            num_labels=5,  # TODO: This is specific to this particular dataset.
+        )
+    )
 
 
 @dataclass(frozen=True)

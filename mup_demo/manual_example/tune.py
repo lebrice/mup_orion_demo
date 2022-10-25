@@ -10,8 +10,7 @@ from orion.client import build_experiment
 from orion.core.worker.trial import Trial
 from typing_extensions import NotRequired
 
-from mup_demo.model import HParams
-from mup_demo.manual_example.train import Config, training_function
+from mup_demo.manual_example.train import Config, HParams, training_function
 from mup_demo.utils import is_main_process, suggest_trial
 
 # class Batch(TypedDict):
