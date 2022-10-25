@@ -1,5 +1,4 @@
-""" TODO: Tuning portion.
-
+"""Tunes the hyper-parameters of a MuP Transformer using Orion's Python API.
 
 Example command:
 ```bash
@@ -22,7 +21,6 @@ from typing import TypeVar
 from orion.core.worker.trial import Trial
 from transformers import TrainingArguments
 
-from mup_demo.trainer_example.orion_trainer_plugin import OrionTrainer
 from mup_demo.trainer_example.train import (
     DataTrainingArguments,
     ModelArguments,
@@ -36,41 +34,9 @@ from mup_demo.utils import is_main_process, suggest_trial
 
 logger = logging.getLogger(__name__)
 
-# TODO: Could try to add the mup-variants in these lists here?
-
-
-def tune_using_trainer_api():
-    """Tune the hyper-parameters using the `hyperparameter_search` API of the HuggingFace Trainer.
-
-    This "works", but the output directory structure is weird (might be fixable though). Also, the
-    code required to make this work is quite messy.
-    """
-    # See all possible arguments in src/transformers/training_args.py
-    # or by passing the --help flag to this script.
-    # We now keep distinct sets of args, for a cleaner separation of concerns.
-    model_args, data_args, training_args = parse_args()
-
-    # Setup logging
-    _setup_logging(training_args)
-
-    trainer = setup_trainer(
-        model_args=model_args, data_args=data_args, training_args=training_args
-    )
-
-    trainer: OrionTrainer
-    best_run = trainer.hyperparameter_search(
-        n_trials=10,
-        direction="minimize",
-        backend="orion",
-        hp_space={
-            "learning_rate": "loguniform(1e-7, 1e-3)",
-        },
-    )
-    print(best_run)
-
 
 def tune_using_orion():
-
+    """Tunes the hyper-parameters of a MuP Transformer using Orion's Python API."""
     # TODO: DO something different (and better) here, much more like the manual example, with one
     # level of abstraction above the Trainer (and re-creating the Trainer each time).
 
@@ -185,5 +151,4 @@ def _replace_fields_of(obj: ConfigType, **kwargs) -> ConfigType:
 
 
 if __name__ == "__main__":
-    # tune_using_trainer_api()
     tune_using_orion()
