@@ -46,8 +46,11 @@ def tune_using_trainer_api():
         n_trials=10,
         direction="minimize",
         backend="orion",
+        # NOTE: Passing `None` would use a default HPO space (not recommended).
         hp_space={
-            "learning_rate": "loguniform(1e-7, 1e-3)",
+            "learning_rate": "loguniform(1e-6, 1e-4)",
+            "num_train_epochs": "fidelity(1, 5)",
+            "seed": "uniform(1, 100, discrete=True)",
         },
     )
     print(best_run)

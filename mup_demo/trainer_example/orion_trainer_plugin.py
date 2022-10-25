@@ -1,48 +1,25 @@
 from __future__ import annotations
-from abc import ABC, abstractmethod
-import copy
 
 import dataclasses
 import importlib.util
+from abc import ABC, abstractmethod
 from pathlib import Path
-from tempfile import TemporaryFile
-from typing import Callable, Any, ClassVar, Protocol
-import functools
-from transformers.trainer import get_last_checkpoint
+from typing import Any, Callable, ClassVar
+
+from orion.client import ExperimentClient, build_experiment
+from orion.core.worker.trial import Trial
+from orion.executor.single_backend import SingleExecutor
 from transformers import TrainingArguments
-from mup_demo.manual_example.train import Config, training_function
-from mup_demo.model import HParams
-from mup_demo.utils import is_main_process, suggest_trial
-from orion.client import build_experiment
+from transformers.integrations import logger
 from transformers.trainer import (
     BestRun,
     Trainer,
-    default_compute_objective,
     default_hp_search_backend,
-    is_optuna_available,
-    is_ray_tune_available,
-    is_sigopt_available,
-    is_wandb_available,
-    run_hp_search_optuna,
-    run_hp_search_ray,
-    run_hp_search_sigopt,
-    run_hp_search_wandb,
+    get_last_checkpoint,
 )
-from orion.executor.single_backend import SingleExecutor
+from transformers.trainer_utils import ExplicitEnum
 
-from transformers.trainer_utils import (
-    BestRun,
-    ExplicitEnum,
-    default_hp_space_optuna,
-    default_hp_space_ray,
-    default_hp_space_sigopt,
-    default_hp_space_wandb,
-)
-from torch import nn
-from typing import Optional
-from transformers import TrainingArguments, PreTrainedModel, DataCollator
-from typing_extensions import ParamSpec
-from typing import Callable, TypeVar
+from mup_demo.utils import suggest_trial
 
 
 class HPSearchBackend(ExplicitEnum):
@@ -55,10 +32,9 @@ class HPSearchBackend(ExplicitEnum):
 
 def default_hp_space_orion() -> dict:
     """Return the default HPO space to use."""
-    # from .integrations import is_optuna_available
     return {
         "learning_rate": "loguniform(1e-6, 1e-4)",
-        "num_train_epochs": "uniform(1, 5, discrete=True)",
+        "num_train_epochs": "fidelity(1, 5)",
         "seed": "uniform(1, 40, discrete=True)",
         "per_device_train_batch_size": "choices([4, 8, 16, 32, 64])",
     }
@@ -66,19 +42,6 @@ def default_hp_space_orion() -> dict:
 
 def is_orion_available() -> bool:
     return importlib.util.find_spec("orion") is not None
-
-
-from transformers.integrations import (
-    PREFIX_CHECKPOINT_DIR,
-    ParallelMode,
-    logger,
-)
-import os
-import pickle
-import torch
-from dataclasses import asdict
-from orion.client import build_experiment
-from orion.core.worker.trial import Trial
 
 
 class HPSearchPlugin(ABC):
@@ -95,16 +58,15 @@ class HPSearchPlugin(ABC):
 
     @classmethod
     def install_command(cls) -> str:
-        return f"pip install " + " ".join(cls.requirements)
+        return "pip install " + " ".join(cls.requirements)
 
     @abstractmethod
     def default_hpo_space(self) -> dict[str, Any]:
         """Returns the default Hyper-Parameter optimization space to use.
 
-        Should be a dictionary where the keys correspond to the TrainingArguments fields.
-        The values can be anything, depending on the HPO framework.
+        Should be a dictionary where the keys correspond to the TrainingArguments fields. The
+        values can be anything, depending on the HPO framework.
         """
-        pass
 
     @abstractmethod
     def report_results(
@@ -124,8 +86,7 @@ class HPSearchPlugin(ABC):
         self, trial_params: dict[str, Any], training_args: TrainingArguments
     ) -> TrainingArguments:
         """Called at the start of a new run, so the Trainer can be updated using the values in the
-        Trial.
-        """
+        Trial."""
         for key, value in trial_params.items():
             if not hasattr(training_args, key):
                 raise RuntimeError(
@@ -136,9 +97,6 @@ class HPSearchPlugin(ABC):
 
     def setup_before_run(self, trial: dict[str, Any]):
         """Called at the start of a new run."""
-
-
-from orion.client import report_objective, ExperimentClient
 
 
 class OrionHPSearchPlugin(HPSearchPlugin):
@@ -318,152 +276,3 @@ class OrionTrainer(Trainer):
         )
 
         return best_run
-
-        # return super().hyperparameter_search(
-        #     hp_space, compute_objective, n_trials, direction, backend, hp_name, **kwargs
-        # )
-        if backend is None:
-            backend = default_hp_search_backend()
-        if backend is None:
-            raise RuntimeError(
-                "At least one of orion, optuna, ray, or sigopt should be installed. "
-                "To install orion run `pip install orion`. "
-                "To install optuna run `pip install optuna`. "
-                "To install ray run `pip install ray[tune]`. "
-                "To install sigopt run `pip install sigopt`."
-            )
-        backend = HPSearchBackend(backend)
-
-        if backend == HPSearchBackend.ORION and not is_orion_available():
-            raise RuntimeError(
-                "You picked the orion backend, but it is not installed. Use `pip install orion`."
-            )
-        if backend == HPSearchBackend.OPTUNA and not is_optuna_available():
-            raise RuntimeError(
-                "You picked the optuna backend, but it is not installed. Use `pip install optuna`."
-            )
-        if backend == HPSearchBackend.RAY and not is_ray_tune_available():
-            raise RuntimeError(
-                "You picked the Ray Tune backend, but it is not installed. Use `pip install 'ray[tune]'`."
-            )
-        if backend == HPSearchBackend.SIGOPT and not is_sigopt_available():
-            raise RuntimeError(
-                "You picked the sigopt backend, but it is not installed. Use `pip install sigopt`."
-            )
-        if backend == HPSearchBackend.WANDB and not is_wandb_available():
-            raise RuntimeError(
-                "You picked the wandb backend, but it is not installed. Use `pip install wandb`."
-            )
-        self.hp_search_backend = backend
-        if self.model_init is None:
-            raise RuntimeError(
-                "To use hyperparameter search, you need to pass your model through a model_init function."
-            )
-
-        self.hp_space = default_hp_space[backend] if hp_space is None else hp_space
-        self.hp_name = hp_name
-        self.compute_objective = (
-            default_compute_objective if compute_objective is None else compute_objective
-        )
-
-        backend_dict = {
-            HPSearchBackend.OPTUNA: run_hp_search_optuna,
-            HPSearchBackend.RAY: run_hp_search_ray,
-            HPSearchBackend.SIGOPT: run_hp_search_sigopt,
-            HPSearchBackend.WANDB: run_hp_search_wandb,
-            # NEW:
-            HPSearchBackend.ORION: run_hp_search_orion,
-        }
-        best_run = backend_dict[backend](self, n_trials, direction, **kwargs)
-
-        self.hp_search_backend = None
-        return best_run
-
-    def _hp_search_setup(self, trial: dict[str, Any]):
-        """HP search setup code
-
-        TODO: This is really really ugly code from HuggingFace. They really should have a proper
-        plugin system instead of this mess.
-        """
-        self._trial = trial
-
-        # TODO: For Orion, perhaps we'd like to change the output dir on the Trainer to the
-        # working_dir of the Trial?
-
-        if self.hp_search_backend is None or trial is None:
-            return
-        params: dict[str, Any] = {}
-        if self.hp_search_backend == HPSearchBackend.OPTUNA:
-            params = self.hp_space(trial)
-        elif self.hp_search_backend == HPSearchBackend.RAY:
-            params = trial
-            params.pop("wandb", None)
-        elif self.hp_search_backend == HPSearchBackend.SIGOPT:
-            params = {
-                k: int(v) if isinstance(v, str) else v
-                for k, v in trial.assignments.items()  # type: ignore
-            }
-        elif self.hp_search_backend == HPSearchBackend.WANDB:
-            params = trial
-        # ---- ADDED -----
-        elif self.hp_search_backend == HPSearchBackend.ORION:
-            params = self.hp_space(trial)
-        # ----------------
-
-        for key, value in params.items():
-            if not hasattr(self.args, key):
-                logger.warning(
-                    f"Trying to set {key} in the hyperparameter search but there is no corresponding field in"
-                    " `TrainingArguments`."
-                )
-                continue
-            old_attr = getattr(self.args, key, None)
-            # Casting value to the proper type
-            if old_attr is not None:
-                value = type(old_attr)(value)
-            setattr(self.args, key, value)
-
-        if self.hp_search_backend == HPSearchBackend.ORION:
-            logger.info(f"Trial: {trial}")
-        elif self.hp_search_backend == HPSearchBackend.OPTUNA:
-            logger.info(f"Trial: {trial.params}")  # type: ignore
-        elif self.hp_search_backend == HPSearchBackend.SIGOPT:
-            logger.info(f"SigOpt Assignments: {trial.assignments}")  # type: ignore
-        elif self.hp_search_backend == HPSearchBackend.WANDB:
-            logger.info(f"W&B Sweep parameters: {trial}")
-
-        if self.args.deepspeed:
-            # Rebuild the deepspeed config to reflect the updated training parameters
-            from transformers.deepspeed import HfTrainerDeepSpeedConfig
-
-            self.args.hf_deepspeed_config = HfTrainerDeepSpeedConfig(self.args.deepspeed)
-            self.args.hf_deepspeed_config.trainer_config_process(self.args)
-
-    def _report_to_hp_search(
-        self,
-        trial: "optuna.Trial" | dict[str, Any],
-        step: int,
-        metrics: dict[str, float],
-    ):
-        if self.hp_search_backend is None or trial is None:
-            return
-        self.objective = self.compute_objective(metrics.copy())
-        if self.hp_search_backend == HPSearchBackend.OPTUNA:
-            import optuna
-
-            trial.report(self.objective, step)
-            if trial.should_prune():
-                self.callback_handler.on_train_end(self.args, self.state, self.control)
-                raise optuna.TrialPruned()
-        elif self.hp_search_backend == HPSearchBackend.RAY:
-            from ray import tune
-
-            if self.control.should_save:
-                self._tune_save_checkpoint()
-            tune.report(objective=self.objective, **metrics)
-        elif self.hp_search_backend == HPSearchBackend.ORION:
-            from orion.client import report_objective
-
-            if self.control.should_save:
-                self._tune_save_checkpoint()
-            tune.report(objective=self.objective, **metrics)
