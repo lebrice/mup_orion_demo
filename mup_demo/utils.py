@@ -1,12 +1,16 @@
 import contextlib
 import functools
 import os
+from dataclasses import fields, replace
+from logging import getLogger as get_logger
 from typing import Callable, TypeVar, cast
 
 from orion.client import ExperimentClient
 from orion.client.experiment import TrialCM
 from orion.core.worker.trial import Trial
 from typing_extensions import ParamSpec
+
+logger = get_logger(__name__)
 
 
 def in_ddp_context() -> bool:
@@ -106,3 +110,21 @@ def _goes_first(is_main: bool):
     yield
     if is_main:
         wait_for_everyone()
+
+
+ConfigType = TypeVar("ConfigType")
+
+
+def replace_fields_of(obj: ConfigType, **kwargs) -> ConfigType:
+    """uses items from `kwargs` to replace matching fields of `obj`.
+
+    Returns the new object.
+    """
+    overlapping_fields = {f.name for f in fields(obj)}.intersection(kwargs.keys())
+    if overlapping_fields:
+        logger.info(
+            f"Replacing the following values in the {type(obj).__name__}: with values from the "
+            f"Trial:\n" + str({k: v for k, v in kwargs.items() if k in overlapping_fields})
+        )
+    things_to_overwrite = {k: v for k, v in kwargs.items() if k in overlapping_fields}
+    return replace(obj, **things_to_overwrite)

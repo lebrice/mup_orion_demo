@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import importlib.util
+import warnings
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from pathlib import Path
@@ -30,6 +31,50 @@ def orion_is_available() -> bool:
 
 
 TrialType = TypeVar("TrialType")
+
+
+def default_make_trainer_for_run(base_trainer: Trainer, trial: Any) -> Trainer:
+    """Default way of returning a Trainer to use for the next run, given the hyper-parameters.
+
+    By default (as is currently done in HF), this will update only the Trainer's `args` attribute,
+    and return the same instance.
+
+    Parameters
+    ----------
+    base_trainer : Trainer
+        The "base" trainer, on which `trainer.hyperparameter_search()` was called.
+    trial : Any
+        The trial sampled by the HPO plugin for the next run.
+
+    Returns
+    -------
+    Trainer
+        The Trainer to use for the next run.
+
+    Raises
+    ------
+    RuntimeError
+        If the Trial's hyper-parameters contain keys that aren't fields of the TrainingArguments
+        class.
+    """
+    training_args = deepcopy(base_trainer.args)
+    trial_params: dict = hp_params(trial)
+    for key, value in trial_params.items():
+        if not hasattr(training_args, key):
+            raise RuntimeError(
+                f"Trying to set attribute {key} to value of {value} in the hyperparameter "
+                f"search, but there is no corresponding field in `TrainingArguments`!"
+            )
+    run_training_args = dataclasses.replace(training_args, **trial_params)
+    # NOTE: By default, reuses the same exact Trainer, but with different args.
+    # TODO: Check that all attributes of the Trainer that were created using values in the `args`
+    # objects are properly reset at the start of each run, based only on the new values of `args`.
+    # Otherwise, there will be a lot of hidden bugs caused by state leaking from one run to the
+    # next.
+
+    run_trainer = base_trainer
+    run_trainer.args = run_training_args
+    return run_trainer
 
 
 class HPSearchPlugin(Generic[TrialType], ABC):
@@ -84,10 +129,34 @@ class HPSearchPlugin(Generic[TrialType], ABC):
         self,
         compute_objective: Callable[[dict[str, float]], float] = default_compute_objective,
         minimize: bool = True,
+        make_trainer_for_run: Callable[
+            [Trainer, TrialType], Trainer
+        ] = default_make_trainer_for_run,
     ) -> None:
+        """Creates a new Hyper-Parameter Search plugin.
+
+        Parameters
+        ----------
+        compute_objective : Callable[[dict[str, float]], float], optional
+            Function used to get a single float from the evaluation metrics dictionary.
+            When not provided, `default_compute_objective` is used.
+        minimize : bool, optional
+            Whether the plugin should attempt to minimize or maximize the objective. Defaults to
+            True.
+        make_trainer_for_run : Callable[ [Trainer, TrialType], Trainer ], optional
+            Function used to create the trainer for the next run, given the base Trainer, and the
+            trial object sampled by the plugin. Defaults to `default_make_trainer_for_run`, which
+            reuses the same Trainer, but with different values in its `TrainingArguments`
+            (trainer.args) attribute.
+
+            Pass a custom function here if you want to optimize other hyper-parameters than the
+            trainer's `TrainingArguments`, for example, the model's configuration, or the
+            dataset/preprocessing configuration.
+        """
         super().__init__()
         self.compute_objective = compute_objective
         self.minimize = minimize
+        self.make_trainer_for_run = make_trainer_for_run
 
         self.training_args_list: list[TrainingArguments] = []
         self.trials: list[TrialType] = []
@@ -119,10 +188,19 @@ class HPSearchPlugin(Generic[TrialType], ABC):
         Trial.
 
         NOTE: This doesn't necessarily have to create a new Trainer, it can also modify the
-        trainer in-place and return it.
+        trainer in-place and return it, although that is strongly discouraged.
         """
         # Not quite sure how to do this correctly.
-        raise NotImplementedError
+        run_trainer = self.make_trainer_for_run(base_trainer, trial)
+        if run_trainer is base_trainer:
+            warnings.warn(
+                RuntimeWarning(
+                    f"Reusing the same Trainer instance between runs is discouraged."
+                    f"We recommend you instead create a new Trainer for each run, using the "
+                    f"`make_trainer_for_run` argument of the {type(self).__name__} constructor."
+                )
+            )
+        return run_trainer
 
     @abstractmethod
     def report_results(
@@ -258,19 +336,6 @@ class HPSearchPlugin(Generic[TrialType], ABC):
     @classmethod
     def install_command(cls) -> str:
         return "pip install " + " ".join(cls.requirements)
-
-    def _update_training_args(
-        self, trial_params: dict[str, Any], training_args: TrainingArguments
-    ) -> TrainingArguments:
-        """Called at the start of a new run, so the Trainer can be updated using the values in the
-        Trial."""
-        for key, value in trial_params.items():
-            if not hasattr(training_args, key):
-                raise RuntimeError(
-                    f"Trying to set attribute {key} to value of {value} in the hyperparameter "
-                    f"search, but there is no corresponding field in `TrainingArguments`!"
-                )
-        return dataclasses.replace(training_args, **trial_params)
 
     def on_before_run_start(self, base_trainer: Trainer, trial: TrialType):
         """Called at the start of a new run."""

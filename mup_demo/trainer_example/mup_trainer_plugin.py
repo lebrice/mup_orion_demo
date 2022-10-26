@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 import torch.optim
+import transformers.optimization
 from torch import nn
 from torch.optim import Optimizer
 from transformers.trainer import (
@@ -26,16 +27,16 @@ class MupTrainerPlugin(Trainer):
 
         if optimizer_cls is torch.optim.Adam:
             optimizer_cls = mup.MuAdam
-        elif optimizer_cls is torch.optim.AdamW:
+        elif optimizer_cls in [torch.optim.AdamW, transformers.optimization.AdamW]:
             optimizer_cls = mup.MuAdamW
         elif optimizer_cls is torch.optim.SGD:
             optimizer_cls = mup.MuSGD
         else:
             raise NotImplementedError(
                 f"To use the MuP Trainer plugin, the optimizer must be one of Adam, AdamW, or "
-                f"SGD. Got {optimizer_cls}"
+                f"SGD. Got {optimizer_cls} (from args.optim={args.optim})."
             )
-        print(f"Using MuP optimizer: {optimizer_cls} with kwargs: {kwargs}")
+        logger.info(f"Using MuP optimizer: {optimizer_cls} with kwargs: {kwargs}")
         return optimizer_cls, kwargs
 
     def create_optimizer(self):

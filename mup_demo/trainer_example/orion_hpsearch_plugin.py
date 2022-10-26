@@ -11,7 +11,10 @@ from transformers.trainer import Trainer
 from transformers.trainer_utils import default_compute_objective
 from typing_extensions import ParamSpec
 
-from mup_demo.trainer_example.hpsearch_plugin import HPSearchPlugin
+from mup_demo.trainer_example.hpsearch_plugin import (
+    HPSearchPlugin,
+    default_make_trainer_for_run,
+)
 from mup_demo.utils import suggest_trial
 
 P = ParamSpec("P")
@@ -42,11 +45,18 @@ class OrionHPSearchPlugin(HPSearchPlugin[Trial]):
         self,
         compute_objective: Callable[[dict[str, float]], float] = default_compute_objective,
         minimize: bool = True,
+        make_trainer_for_run: Callable[[Trainer, Trial], Trainer] = default_make_trainer_for_run,
         _experiment_function: Callable[P, ExperimentClient] = build_experiment,
         *experiment_args: P.args,
         **experiment_kwargs: P.kwargs,
     ) -> None:
         super().__init__(compute_objective, minimize)
+        self.make_trainer_for_run = make_trainer_for_run
+        if not minimize:
+            raise NotImplementedError(
+                "Orion only supports minimization for now. "
+                "(see https://github.com/Epistimio/orion/issues/873)"
+            )
         self._experiment_function = _experiment_function
         self.experiment_args = experiment_args
         self.experiment_kwargs = experiment_kwargs
@@ -68,6 +78,7 @@ class OrionHPSearchPlugin(HPSearchPlugin[Trial]):
         self.experiment_kwargs["space"] = hp_space
         self.experiment_kwargs.setdefault("max_trials", n_trials)
         self.experiment_kwargs.setdefault("working_dir", str(sweep_dir))
+        # In not passed, setup a Pickleddb database in the sweep directory.
         self.experiment_kwargs.setdefault(
             "storage",
             {
@@ -90,16 +101,17 @@ class OrionHPSearchPlugin(HPSearchPlugin[Trial]):
         return trial.params
 
     def get_trainer_for_run(self, base_trainer: Trainer, trial: Trial) -> Trainer:
-        run_training_args = self._update_training_args(trial.params, base_trainer.args)
+        starting_output_dir = base_trainer.args.output_dir
+        run_trainer = super().get_trainer_for_run(base_trainer, trial)
+        # If the output_dir wasn't already changed by the trial hyper-parameters, then change it.
+        if run_trainer.args.output_dir == starting_output_dir:
+            run_trainer.args.output_dir = trial.working_dir
+            # TODO: Do we also need to change this `logging_dir` ?
+            run_trainer.args.logging_dir = trial.working_dir
 
-        # Important: Change some values that aren't hyper-parameters, but that need to be set
-        # differently for each run.
-        run_training_args.output_dir = trial.working_dir
-        run_training_args.logging_dir = trial.working_dir
-
-        # TODO: Make 100% sure that this is okay. Ideally, we'd create a new Trainer for each run.
-        run_trainer = base_trainer
-        run_trainer.args = run_training_args
+        # TODO: Make sure that there is no state leaking from one run to the next.
+        # Ideally, create a new Trainer while reusing all the expensive objects. (model, datasets,
+        # etc).
         return run_trainer
 
     def report_results(
@@ -109,7 +121,7 @@ class OrionHPSearchPlugin(HPSearchPlugin[Trial]):
         train_metrics: dict[str, float],
         eval_metrics: dict[str, float],
     ):
-        """Report the results of this Trial to the HPO framework."""
+        """Report the results of this Trial to Orion."""
         assert self.experiment
         objective = self.compute_objective(eval_metrics)
 

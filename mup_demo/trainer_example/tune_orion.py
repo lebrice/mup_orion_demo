@@ -14,23 +14,18 @@ accelerate launch mup_demo/trainer_example/tune.py \
 from __future__ import annotations
 
 import logging
-from dataclasses import fields, replace
 from pathlib import Path
-from typing import TypeVar
 
 from orion.core.worker.trial import Trial
-from transformers import TrainingArguments
 
 from mup_demo.trainer_example.train import (
-    DataTrainingArguments,
-    ModelArguments,
     _setup_logging,
     evaluation_loop,
     parse_args,
     setup_trainer,
     train,
 )
-from mup_demo.utils import is_main_process, suggest_trial
+from mup_demo.utils import is_main_process, replace_fields_of, suggest_trial
 
 logger = logging.getLogger(__name__)
 
@@ -65,17 +60,21 @@ def tune_using_orion():
     )
 
     while not experiment.is_done:
+
+        # Suggest a new trial.
         trial = suggest_trial(experiment)
         logger.info(f"Trial {trial.id} suggested, with params {trial.params}")
         assert trial.working_dir is not None
         assert Path(trial.working_dir).parent == sweep_dir
+
         # Create the configs for this run, by replacing some of the values in the original configs
         # with the ones suggested in the trial.
-        run_training_args = _replace_fields_of(
-            training_args, **trial.params, output_dir=trial.working_dir
+        trial_hparams = trial.params.copy()
+        run_training_args = replace_fields_of(
+            training_args, **trial_hparams, output_dir=trial.working_dir
         )
-        run_model_args = _replace_fields_of(model_args, **trial.params)
-        run_data_args = _replace_fields_of(data_args, **trial.params)
+        run_model_args = replace_fields_of(model_args, **trial_hparams)
+        run_data_args = replace_fields_of(data_args, **trial_hparams)
         run_training_args.output_dir = trial.working_dir
 
         if is_main_process():
@@ -132,20 +131,6 @@ def tune_using_orion():
     # for trial in sorted(trials, key=lambda trial: trial.objective.value):
     #     # metrics = get_trial_metrics(trial)
     #     print(f"{trial.working_dir}:", trial.params, trial.results)
-
-
-ConfigType = TypeVar("ConfigType", TrainingArguments, DataTrainingArguments, ModelArguments)
-
-
-def _replace_fields_of(obj: ConfigType, **kwargs) -> ConfigType:
-    overlapping_fields = {f.name for f in fields(obj)}.intersection(kwargs.keys())
-    if overlapping_fields:
-        logger.info(
-            f"Replacing the following values in the {type(obj).__name__}: with values from the "
-            f"Trial:\n" + str({k: v for k, v in kwargs.items() if k in overlapping_fields})
-        )
-    things_to_overwrite = {k: v for k, v in kwargs.items() if k in overlapping_fields}
-    return replace(obj, **things_to_overwrite)
 
 
 if __name__ == "__main__":
