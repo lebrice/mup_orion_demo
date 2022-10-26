@@ -7,15 +7,10 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable, ClassVar, Generic, Literal, TypeVar
 
-from orion.client import ExperimentClient, build_experiment
-from orion.core.worker.trial import Trial
 from transformers import TrainingArguments
 from transformers.integrations import hp_params, logger
 from transformers.trainer import BestRun, Trainer, get_last_checkpoint
 from transformers.trainer_utils import default_compute_objective
-from typing_extensions import ParamSpec
-
-from mup_demo.utils import suggest_trial
 
 HPSearchBackend = Literal["optuna", "ray", "sigopt", "wandb", "orion"]
 
@@ -38,11 +33,47 @@ TrialType = TypeVar("TrialType")
 
 
 class HPSearchPlugin(Generic[TrialType], ABC):
-    """IDEA: Move the HPO logic into a 'plugin' class, to fix the weird mess in HuggingFace's
-    `Trainer` class.
+    """A base class for a hyper-parameter optimization plugin for HuggingFace.
 
-    There's a weird mix of functions (see above) and ugly backend-specific methods on the Trainer
-    class, which really don't make sense.
+    There are several issues with the Hyper-Parameter Optimization (HPO) of the `Trainer` class.
+
+    `Trainer.hyperparameter_search` method:
+
+    1. Difficulty of adding new frameworks:
+       Using globally accessible dictionaries to store callbacks for each framework is nice.
+       However, the code actually relies on a mix of such global dictionaries, as well as
+       inaccessible local dictionaries inside various functions, hard-coded if cascades, and enums.
+       This makes it inconvenient to add support for other HPO libraries.
+
+    2.  Messy implementation with unnecessary coupling:
+        The main body of the HPO routine is contained in a function for each framework, which is
+        stored in a global dictionary. This is fine so far. *However*, the issue is that these
+        functions, in many cases, rely on additional, framework-specific methods of the Trainer
+        class, which appear to have been added as "patches" to the Trainer class. There is therefore
+        a lot of bad coupling between the Trainer class and these functions.
+
+    2.  No clear separation of concerns:
+        The entire HPO routine operates as a method on the Trainer class. The Trainer, which is
+        normally used to perform a single training run, is now used to perform multiple runs in
+        succession, using the same Trainer instance.
+
+        This is problematic for a few reasons, one of which is that there is a possibility of one
+        training run affecting another.
+
+        One potential solution to this, in my mind, would be to perform HPO at one level of
+        abstraction above the Trainer API. For instance, by passing some sort of callable which
+        should create the Trainer, given a set of hyper-parameters.
+
+        On the other hand, reusing some of the Trainer's components between runs is more efficient.
+        There is probably a tradeoff to be made here, where each HPO "plugin" can decide what to
+        share and what to recreate for each run.
+
+    The idea is that each framework could implement and encapsulate its own logic for doing HPO
+    inside a subclass of this `HPSearchPlugin` class. This plugin would then either be passed to
+    a Trainer method (e.g. a `Trainer.hyperparameter_search`-like method, or (preferably IMO)
+    used directly to run the sweep, via `HPSearchPlugin.tune_hyperparameters()`.
+
+    Each HPO framework only needs to implement the abstract methods of the `HPSearchPlugin` class.
     """
 
     name: ClassVar[str]
@@ -80,6 +111,17 @@ class HPSearchPlugin(Generic[TrialType], ABC):
         Should be a dictionary where the keys correspond to the TrainingArguments fields. The
         values can be anything, depending on the HPO framework.
         """
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_trainer_for_run(self, base_trainer: Trainer, trial: TrialType) -> Trainer:
+        """Called at the start of a new run, to adapt the trainer with the information of the
+        Trial.
+
+        NOTE: This doesn't necessarily have to create a new Trainer, it can also modify the
+        trainer in-place and return it.
+        """
+        # Not quite sure how to do this correctly.
         raise NotImplementedError
 
     @abstractmethod
@@ -122,9 +164,9 @@ class HPSearchPlugin(Generic[TrialType], ABC):
         n_trials: int,
     ) -> BestRun:
         """Runs the hyper-parameter optimization procedure."""
-        hp_space = hp_space or self.default_hp_space()
         sweep_dir = Path(base_trainer.args.output_dir)
 
+        hp_space = hp_space or self.default_hp_space()
         self.on_sweep_setup(
             base_trainer=base_trainer, hp_space=hp_space, n_trials=n_trials, sweep_dir=sweep_dir
         )
@@ -213,17 +255,6 @@ class HPSearchPlugin(Generic[TrialType], ABC):
     ) -> None:
         """Called at the start of the sweep."""
 
-    @abstractmethod
-    def get_trainer_for_run(self, base_trainer: Trainer, trial: TrialType) -> Trainer:
-        """Called at the start of a new run, to adapt the trainer with the information of the
-        Trial.
-
-        NOTE: This doesn't necessarily have to create a new Trainer, it can also modify the
-        trainer in-place and return it.
-        """
-        # Not quite sure how to do this correctly.
-        raise NotImplementedError
-
     @classmethod
     def install_command(cls) -> str:
         return "pip install " + " ".join(cls.requirements)
@@ -251,102 +282,6 @@ class HPSearchPlugin(Generic[TrialType], ABC):
         """Called at the start of a new run."""
 
 
-P = ParamSpec("P")
-
-
-class OrionHPSearchPlugin(HPSearchPlugin[Trial]):
-
-    name: ClassVar[str] = "orion"
-    url: ClassVar[str] = "https://www.github.com/epistimio/orion"
-    requirements: ClassVar[list[str]] = ["orion"]
-
-    def __init__(
-        self,
-        compute_objective: Callable[[dict[str, float]], float] = default_compute_objective,
-        minimize: bool = True,
-        _experiment_function: Callable[P, ExperimentClient] = build_experiment,
-        *experiment_args: P.args,
-        **experiment_kwargs: P.kwargs,
-    ) -> None:
-        super().__init__(compute_objective, minimize)
-        self._experiment_function = _experiment_function
-        self.experiment_args = experiment_args
-        self.experiment_kwargs = experiment_kwargs
-        self.experiment: ExperimentClient | None = None
-
-    def default_hp_space(self) -> dict[str, str]:
-        return default_hp_space_orion()
-
-    def is_done(self) -> bool:
-        return self.experiment and self.experiment.is_done
-
-    def on_sweep_setup(
-        self, base_trainer: Trainer, hp_space: dict[str, Any], sweep_dir: Path, n_trials: int
-    ) -> None:
-        super().on_sweep_setup(base_trainer, hp_space, sweep_dir, n_trials)
-
-        # TODO: Distinction between n_trials and max_trials? (as in, n_trials in addition to
-        # the current number of completed trials in the sweep, vs n_trials in total?)
-        self.experiment_kwargs["space"] = hp_space
-        self.experiment_kwargs.setdefault("max_trials", n_trials)
-        self.experiment_kwargs.setdefault("working_dir", str(sweep_dir))
-        self.experiment_kwargs.setdefault(
-            "storage",
-            {
-                "type": "legacy",
-                "database": {"type": "pickleddb", "host": str(sweep_dir / "db.pkl")},
-            },
-        )
-        self.experiment = self._experiment_function(
-            *self.experiment_args,
-            **self.experiment_kwargs,
-        )
-
-    def suggest_trial(self) -> Trial:
-        assert self.experiment is not None
-        trial: Trial = suggest_trial(self.experiment)
-        logger.info(f"Trial params: {trial.params}")
-        return trial
-
-    def get_trainer_for_run(self, base_trainer: Trainer, trial: Trial) -> Trainer:
-        run_training_args = self._update_training_args(trial.params, base_trainer.args)
-
-        # Important: Change some values that aren't hyper-parameters, but that need to be set
-        # differently for each run.
-        run_training_args.output_dir = trial.working_dir
-        run_training_args.logging_dir = trial.working_dir
-
-        # TODO: Make 100% sure that this is okay. Ideally, we'd create a new Trainer for each run.
-        run_trainer = base_trainer
-        run_trainer.args = run_training_args
-        return run_trainer
-
-    def report_results(
-        self,
-        trial: Trial,
-        run_trainer: Trainer,
-        train_metrics: dict[str, float],
-        eval_metrics: dict[str, float],
-    ):
-        """Report the results of this Trial to the HPO framework."""
-        assert self.experiment
-        objective = self.compute_objective(eval_metrics)
-
-        if run_trainer.args.process_index == 0:
-            print(f"Reporting objective of {objective} for trial {trial}")
-            results = [dict(name="objective", value=objective, type="objective")]
-            results += [
-                dict(name=name, value=value, type="statistic")
-                for metrics_dict in [train_metrics, eval_metrics]
-                for name, value in metrics_dict.items()
-            ]
-            self.experiment.observe(trial, results)
-
-    def report_error(self, trial: Trial, run_trainer: Trainer, error: Exception):
-        # NOTE: Could report a bad objective to Orion, but that's not a priority here.
-        pass
-
-
 class OrionTrainer(Trainer):
     def hyperparameter_search(
         self,
@@ -357,7 +292,7 @@ class OrionTrainer(Trainer):
     ) -> BestRun:
         if hpsearch_plugin is None:
             if orion_is_available():
-                from mup_demo.trainer_example.orion_trainer_plugin import (
+                from mup_demo.trainer_example.orion_hpsearch_plugin import (
                     OrionHPSearchPlugin,
                 )
 
@@ -366,6 +301,37 @@ class OrionTrainer(Trainer):
                     name="tmp_sweep",
                     space=hp_space,
                     # orion experiment kwargs:
+                )
+        assert hpsearch_plugin is not None
+
+        hpsearch_plugin = hpsearch_plugin
+
+        best_run = hpsearch_plugin.run_hpo_sweep(
+            base_trainer=self, hp_space=hp_space, n_trials=n_trials
+        )
+
+        return best_run
+
+
+class NewHPSearchAPIMixin(Trainer):
+    def hyperparameter_search(
+        self,
+        hp_space: dict[str, Any] | None = None,
+        minimize: bool = True,
+        hpsearch_plugin: HPSearchPlugin | None = None,
+        n_trials: int = 20,
+    ) -> BestRun:
+        if hpsearch_plugin is None:
+            if orion_is_available():
+                from mup_demo.trainer_example.orion_hpsearch_plugin import (
+                    OrionHPSearchPlugin,
+                )
+
+                hpsearch_plugin = OrionHPSearchPlugin(
+                    minimize=minimize,
+                    name="tmp_sweep",
+                    space=hp_space,
+                    # NOTE: orion experiment kwargs could be passed here.
                 )
         assert hpsearch_plugin is not None
 

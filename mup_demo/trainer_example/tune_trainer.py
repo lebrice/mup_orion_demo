@@ -15,10 +15,8 @@ from __future__ import annotations
 
 import logging
 
-from mup_demo.trainer_example.orion_trainer_plugin import (
-    OrionHPSearchPlugin,
-    OrionTrainer,
-)
+from mup_demo.trainer_example.hpsearch_plugin import NewHPSearchAPIMixin
+from mup_demo.trainer_example.orion_hpsearch_plugin import OrionHPSearchPlugin
 from mup_demo.trainer_example.train import _setup_logging, parse_args, setup_trainer
 
 logger = logging.getLogger(__name__)
@@ -46,7 +44,7 @@ def tune_using_trainer_api():
     # doesn't update the `per_device_train_batch_size` argument, so it prints (and potentially
     # logs / saves) the wrongs values!
 
-    trainer: OrionTrainer
+    trainer: NewHPSearchAPIMixin
     best_run = trainer.hyperparameter_search(
         n_trials=10,
         # NOTE: Passing `None` would use a default HPO space (not recommended).

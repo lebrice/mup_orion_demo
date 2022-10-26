@@ -70,11 +70,11 @@ from transformers.testing_utils import CaptureLogger
 from transformers.trainer_utils import get_last_checkpoint
 
 from mup_demo.model import get_gpt2_model
+from mup_demo.trainer_example.hpsearch_plugin import NewHPSearchAPIMixin
 from mup_demo.trainer_example.mup_trainer_plugin import MupTrainerPlugin
-from mup_demo.trainer_example.orion_trainer_plugin import OrionTrainer
 
 
-class CustomTrainer(OrionTrainer, MupTrainerPlugin):
+class CustomTrainer(NewHPSearchAPIMixin, MupTrainerPlugin):
     pass
 
 

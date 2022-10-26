@@ -1,57 +1,45 @@
 from __future__ import annotations
-from transformers.trainer import Trainer
 
 import logging
 
-import mutransformers
-import transformers
+import torch.optim
 from torch import nn
-from transformers import (
-    CONFIG_MAPPING,
-    MODEL_FOR_CAUSAL_LM_MAPPING,
-    Trainer,
-)
+from torch.optim import Optimizer
 from transformers.trainer import (
     ALL_LAYERNORM_LAYERS,
     ShardedDDPOption,
+    Trainer,
+    TrainingArguments,
     get_parameter_names,
     is_sagemaker_mp_enabled,
 )
-from transformers.utils.versions import require_version
-import mutransformers
 
-# You can also adapt this script on your own causal language modeling task. Pointers for this are left as comments.
-
-
-# Will error if the minimal version of Transformers is not installed. Remove at your own risks.
-# check_min_version("4.24.0.dev0")
-
-require_version(
-    "datasets>=1.8.0",
-    "To fix: pip install -r examples/pytorch/language-modeling/requirements.txt",
-)
+import mup
 
 logger = logging.getLogger(__name__)
 
 
-MODEL_CONFIG_CLASSES = list(MODEL_FOR_CAUSAL_LM_MAPPING.keys())
-MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
-
-# TODO: Could try to add the mup-variants in these lists here?
-
-
-MODEL_CONFIG_CLASSES[
-    MODEL_CONFIG_CLASSES.index(transformers.GPT2Config)
-] = mutransformers.GPT2Config
-CONFIG_MAPPING["gpt2"] = mutransformers.GPT2Config
-CONFIG_MAPPING["bert"] = mutransformers.BertConfig
-CONFIG_MAPPING["roberta"] = mutransformers.RobertaConfig
-
-
 class MupTrainerPlugin(Trainer):
+    @classmethod
+    def get_optimizer_cls_and_kwargs(cls, args: TrainingArguments) -> tuple[type[Optimizer], dict]:
+        optimizer_cls, kwargs = super().get_optimizer_cls_and_kwargs(args)
+
+        if optimizer_cls is torch.optim.Adam:
+            optimizer_cls = mup.MuAdam
+        elif optimizer_cls is torch.optim.AdamW:
+            optimizer_cls = mup.MuAdamW
+        elif optimizer_cls is torch.optim.SGD:
+            optimizer_cls = mup.MuSGD
+        else:
+            raise NotImplementedError(
+                f"To use the MuP Trainer plugin, the optimizer must be one of Adam, AdamW, or "
+                f"SGD. Got {optimizer_cls}"
+            )
+        print(f"Using MuP optimizer: {optimizer_cls} with kwargs: {kwargs}")
+        return optimizer_cls, kwargs
+
     def create_optimizer(self):
         # NOTE: Copying all of this just to be certain that it uses the MuAdamW optimizer.
-        from mup import MuAdamW
 
         self.hp_search_backend
         opt_model = self.model_wrapped if is_sagemaker_mp_enabled() else self.model
@@ -74,10 +62,10 @@ class MupTrainerPlugin(Trainer):
                 },
             ]
 
-            optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(self.args)
             # NEW CODE: #
-            optimizer_cls = MuAdamW
-            print(f"Using MuP optimizer: {optimizer_cls}")
+            # NOTE: Change this here to use `self.get_optimizer_cls_and_kwargs`
+            # optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(self.args)
+            optimizer_cls, optimizer_kwargs = type(self).get_optimizer_cls_and_kwargs(self.args)
             # END NEW CODE #
 
             if self.sharded_ddp == ShardedDDPOption.SIMPLE:
