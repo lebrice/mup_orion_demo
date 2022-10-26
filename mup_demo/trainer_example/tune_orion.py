@@ -37,8 +37,6 @@ logger = logging.getLogger(__name__)
 
 def tune_using_orion():
     """Tunes the hyper-parameters of a MuP Transformer using Orion's Python API."""
-    # TODO: DO something different (and better) here, much more like the manual example, with one
-    # level of abstraction above the Trainer (and re-creating the Trainer each time).
 
     model_args, data_args, training_args = parse_args()
 

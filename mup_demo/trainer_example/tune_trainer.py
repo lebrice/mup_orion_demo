@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import logging
 
-from mup_demo.trainer_example.orion_trainer_plugin import OrionTrainer
+from mup_demo.trainer_example.orion_trainer_plugin import (
+    OrionHPSearchPlugin,
+    OrionTrainer,
+)
 from mup_demo.trainer_example.train import _setup_logging, parse_args, setup_trainer
 
 logger = logging.getLogger(__name__)
-
-# TODO: Could try to add the mup-variants in these lists here?
 
 
 def tune_using_trainer_api():
@@ -52,6 +53,7 @@ def tune_using_trainer_api():
             "num_train_epochs": "fidelity(1, 5)",
             "seed": "uniform(1, 100, discrete=True)",
         },
+        hpsearch_plugin=OrionHPSearchPlugin,
     )
     print(best_run)
 

@@ -82,7 +82,6 @@ def tune(
 
     # Idea: Could we add something like a 'best_trial_so_far' property/method on the Experiment
     # object?
-    # TODO: This isn't typed.
     trials = experiment.fetch_trials_by_status("completed")
     best_trial = min(trials, key=lambda trial: trial.objective.value)
     print(f"Best trial: {best_trial.id} with objective: {best_trial.objective.value}")
