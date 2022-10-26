@@ -61,13 +61,12 @@ from transformers import (
     PreTrainedModel,
     PreTrainedTokenizerBase,
     Trainer,
-    TrainingArguments,
-    default_data_collator,
-    is_torch_tpu_available,
-    set_seed,
 )
+from transformers import TrainingArguments as _TrainingArguments
+from transformers import default_data_collator, is_torch_tpu_available, set_seed
 from transformers.testing_utils import CaptureLogger
 from transformers.trainer_utils import get_last_checkpoint
+from transformers.training_args import ExplicitEnum
 
 from mup_demo.model import get_gpt2_model
 from mup_demo.trainer_example.hpsearch_plugin import NewHPSearchAPIMixin
@@ -193,6 +192,31 @@ class DataTrainingArguments:
                 _raise_if_bad_extension(self.validation_file, "validation_file")
 
 
+@dataclass
+class TrainingArguments(_TrainingArguments):
+    """TrainingArguments is the subset of the arguments we use in our example scripts **which
+    relate to the training loop itself**."""
+
+    def __post_init__(self):
+        # NOTE: Little temporary patch so these fields (which have a `Enum | str` annotation) are
+        # parsed properly.
+        # BUG: Fix a bug that occurs with ExplicitEnum, where it parses it by name into
+        # a 'IntervalStrategy.NO' string, rather than into the 'IntervalStrategy.NO' enum value!
+        def _to_str(v: ExplicitEnum | str) -> str:
+            if "." in v:
+                return v.split(".")[-1].lower()
+            return v if not isinstance(v, ExplicitEnum) else v.value
+
+        self.evaluation_strategy = _to_str(self.evaluation_strategy)  # "no"
+        self.logging_strategy = _to_str(self.logging_strategy)  # "steps"
+        self.save_strategy = _to_str(self.save_strategy)  # "steps"
+        self.hub_strategy = _to_str(self.hub_strategy)  # "every_save"
+        self.lr_scheduler_type = _to_str(self.lr_scheduler_type)  # "linear"
+        self.optim = _to_str(self.optim)  # "adamw_hf"
+
+        super().__post_init__()
+
+
 def _raise_if_bad_extension(file_path: str, attr_name: str):
     extension = file_path.split(".")[-1]
     if extension not in ["csv", "json", "txt"]:
@@ -248,6 +272,11 @@ def parse_with_good_defaults() -> tuple[ModelArguments, DataTrainingArguments, T
             do_eval=True,
             output_dir="runs/tune_plugin_api",
             num_train_epochs=1,
+            evaluation_strategy="no",
+            logging_strategy="steps",
+            save_strategy="steps",
+            hub_strategy="every_save",
+            optim="adamw_hf",
         ),
     )
 
