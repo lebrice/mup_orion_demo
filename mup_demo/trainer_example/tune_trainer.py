@@ -2,13 +2,8 @@
 
 Example command:
 ```bash
-accelerate launch mup_demo/trainer_example/tune.py \
-    --model_name_or_path gpt2 --dataset_name wikitext \
-    --dataset_config_name wikitext-2-raw-v1 \
-    --per_device_train_batch_size 4 --per_device_eval_batch_size 8 \
-    --ddp_find_unused_parameters=False --do_train --do_eval \
-    --num_train_epochs=1 --max_train_samples=100 \
-    --output_dir runs/tune_debug
+accelerate launch mup_demo/trainer_example/tune_trainer.py \
+    --output_dir runs/new_tune_debug --num_train_epochs=1 --max_train_samples=100
 ```
 """
 from __future__ import annotations

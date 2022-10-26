@@ -6,7 +6,7 @@ Demo of [mup](https://www.github.com/microsoft/mup) with [Orion](https://www.git
 
 This can dramatically reduce the amount of compute required to optimize very large models, potentially saving millions of dollars in training cost!
 
-This is a demo of how to use mup to train a transformer from [mutransformers](https://www.github.com/microsoft/mutransformers) with Orion.
+This is a demo of how to use mup to train a HuggingFace transformer from [mutransformers](https://www.github.com/microsoft/mutransformers) with Orion.
 
 ## Repo layout
 
