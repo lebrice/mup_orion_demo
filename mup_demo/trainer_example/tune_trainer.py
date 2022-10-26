@@ -41,19 +41,28 @@ def tune_using_trainer_api():
     trainer = setup_trainer(
         model_args=model_args, data_args=data_args, training_args=training_args
     )
+    # NOTE: The --auto_find_batch_size option "works", but it's very hacky, it sets the
+    # `self._train_batch_size` arguments to successively lower values until it 'works', but it
+    # doesn't update the `per_device_train_batch_size` argument, so it prints (and potentially
+    # logs / saves) the wrongs values!
 
     trainer: OrionTrainer
     best_run = trainer.hyperparameter_search(
         n_trials=10,
-        direction="minimize",
-        backend="orion",
         # NOTE: Passing `None` would use a default HPO space (not recommended).
+        # IDEA: Would make more sense to have the `HPSearchPlugin` have a `hyperparameter_search`
+        # method, and it could take in a `make_run_trainer: (trial) -> Trainer` as an argument!
         hp_space={
             "learning_rate": "loguniform(1e-6, 1e-4)",
             "num_train_epochs": "fidelity(1, 5)",
             "seed": "uniform(1, 100, discrete=True)",
         },
-        hpsearch_plugin=OrionHPSearchPlugin,
+        minimize=True,
+        hpsearch_plugin=OrionHPSearchPlugin(
+            name="mup_demo2",
+            algorithms={"tpe": {"seed": 42}},
+            debug=True,
+        ),
     )
     print(best_run)
 
