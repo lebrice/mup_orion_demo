@@ -199,13 +199,16 @@ def _raise_if_bad_extension(file_path: str, attr_name: str):
         raise ValueError(f"`{attr_name}` should be a csv, json or txt file.")
 
 
-def parse_args() -> tuple[ModelArguments, DataTrainingArguments, TrainingArguments]:
+def parse_args(
+    default_model_args: ModelArguments | None = None,
+    default_data_args: DataTrainingArguments | None = None,
+    default_training_args: TrainingArguments | None = None,
+) -> tuple[ModelArguments, DataTrainingArguments, TrainingArguments]:
+    # Add the arguments using [SimpleParsing](https://www.github.com/lebrice/SimpleParsing):
     parser = simple_parsing.ArgumentParser(description=__doc__, add_config_path_arg=True)
-    parser.add_arguments(ModelArguments, dest="model")
-    parser.add_arguments(DataTrainingArguments, dest="data")
-    # TODO: The docstrings on these classes are gynormous. Should probably take only the first few
-    # lines.
-    parser.add_arguments(TrainingArguments, dest="training")
+    parser.add_arguments(ModelArguments, dest="model", default=default_model_args)
+    parser.add_arguments(DataTrainingArguments, dest="data", default=default_data_args)
+    parser.add_arguments(TrainingArguments, dest="training", default=default_training_args)
 
     model_args: ModelArguments
     data_args: DataTrainingArguments
@@ -228,11 +231,32 @@ def parse_args() -> tuple[ModelArguments, DataTrainingArguments, TrainingArgumen
     return model_args, data_args, training_args
 
 
+def parse_with_good_defaults() -> tuple[ModelArguments, DataTrainingArguments, TrainingArguments]:
+    return parse_args(
+        default_model_args=ModelArguments(
+            model_name_or_path="gpt2",
+        ),
+        default_data_args=DataTrainingArguments(
+            dataset_name="wikitext",
+            dataset_config_name="wikitext-2-raw-v1",
+        ),
+        default_training_args=TrainingArguments(
+            per_device_train_batch_size=4,
+            per_device_eval_batch_size=8,
+            ddp_find_unused_parameters=False,
+            do_train=True,
+            do_eval=True,
+            output_dir="runs/tune_plugin_api",
+            num_train_epochs=1,
+        ),
+    )
+
+
 def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
-    model_args, data_args, training_args = parse_args()
+    model_args, data_args, training_args = parse_with_good_defaults()
 
     # Setup logging
     _setup_logging(training_args)

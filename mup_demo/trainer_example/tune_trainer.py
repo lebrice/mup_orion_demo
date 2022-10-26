@@ -17,7 +17,11 @@ import logging
 
 from mup_demo.trainer_example.hpsearch_plugin import NewHPSearchAPIMixin
 from mup_demo.trainer_example.orion_hpsearch_plugin import OrionHPSearchPlugin
-from mup_demo.trainer_example.train import _setup_logging, parse_args, setup_trainer
+from mup_demo.trainer_example.train import (
+    _setup_logging,
+    parse_with_good_defaults,
+    setup_trainer,
+)
 from mup_demo.utils import replace_fields_of
 
 logger = logging.getLogger(__name__)
@@ -32,7 +36,7 @@ def tune_using_trainer_api():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
-    model_args, data_args, training_args = parse_args()
+    model_args, data_args, training_args = parse_with_good_defaults()
 
     # Setup logging
     _setup_logging(training_args)
@@ -70,7 +74,7 @@ def tune_using_plugin_api():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
-    model_args, data_args, training_args = parse_args()
+    model_args, data_args, training_args = parse_with_good_defaults()
 
     # Setup logging
     _setup_logging(training_args)

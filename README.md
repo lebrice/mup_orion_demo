@@ -10,7 +10,10 @@ This is a demo of how to use mup to train a transformer from [mutransformers](ht
 
 ## Repo layout
 
-The repo contains two examples: One using HuggingFace's [Accelerate](https://huggingface.co/docs/accelerate/main/en/index) library, and another using the [Trainer](https://huggingface.co/docs/transformers/main_classes/trainer) API.
+The repo contains examples for two different APIs:
+
+- One using HuggingFace's [Accelerate](https://huggingface.co/docs/accelerate/main/en/index) library;
+- The second using the [Trainer](https://huggingface.co/docs/transformers/main_classes/trainer) API.
 
 Here is what each file contains:
 
@@ -22,10 +25,11 @@ mup_demo
 │   └── tune.py                  # Tuning script with Orion's Python API  (runnable from the CLI)
 ├── trainer_example            # Folder containing a 'trainer' example using HF's Trainer API
 │   ├── mup_trainer_plugin.py    # "Plugin" for the HF Trainer API for MuP
-│   ├── orion_trainer_plugin.py  # "Plugin" for the HF Trainer API for Orion
+│   ├── hpsearch_plugin.py       # New base class for potential HPO "Plugins" for the HuggingFace Trainer API.
+│   ├── orion_hpsearch_plugin.py # "Plugin" for the HF Trainer API for Orion
 │   ├── train.py                 # Training script with HF's Trainer API  (runnable from the CLI)
 │   ├── tune_orion.py            # Tuning script using Orion's Python API (runnable from the CLI)
-│   └── tune_trainer.py          # Tuning script using HF's Trainer API   (runnable from the CLI)
+│   └── tune_trainer.py          # Tuning script using the proposed HPSearch Plugin API (runnable from the CLI)
 ├── model.py                   # Model creation functions common to both examples
 └── utils.py                   # Utility functions common to both examples
 ```
@@ -36,22 +40,16 @@ mup_demo
 
 ```console
 accelerate launch mup_demo/trainer_example/train.py \
-    --model_name_or_path gpt2 --dataset_name wikitext \
-    --dataset_config_name wikitext-2-raw-v1 --per_device_train_batch_size 4 \
-    --per_device_eval_batch_size 8 --ddp_find_unused_parameters=False \
-    --do_train --do_eval --output_dir test_run
+    --per_device_train_batch_size 4 --output_dir runs/test_run
 ```
 
 ### Running a sweep with Orion's command-line API:
 
 ```console
-orion hunt -n test \
+orion hunt -n mup_debug \
     accelerate launch mup_demo/trainer_example/train.py \
-        --model_name_or_path gpt2 --dataset_name wikitext \
-        --dataset_config_name wikitext-2-raw-v1 \
         --per_device_train_batch_size~"uniform(1,4,discrete=True)" \
-        --per_device_eval_batch_size 8 --ddp_find_unused_parameters=False \
-        --do_train --do_eval --output_dir=runs/{exp.name}/{trial.id} \
+        --output_dir=runs/orion_cli/{exp.name}/{trial.id} \
         --max_train_samples=100
 ```
 
@@ -59,25 +57,19 @@ orion hunt -n test \
 
 ```console
 accelerate launch mup_demo/trainer_example/tune_orion.py \
-    --model_name_or_path gpt2 --dataset_name wikitext \
-    --dataset_config_name wikitext-2-raw-v1 \
     --per_device_train_batch_size 4 \
-    --per_device_eval_batch_size 8 --ddp_find_unused_parameters=False \
-    --do_train --do_eval --output_dir=runs \
-    --max_train_samples=100
+    --output_dir=runs/orion_python --max_train_samples=100
 ```
 
 ### Running a sweep with the HF Trainer API:
 
 ```console
 accelerate launch mup_demo/trainer_example/tune_trainer.py \
-    --model_name_or_path gpt2 --dataset_name wikitext \
-    --dataset_config_name wikitext-2-raw-v1 \
-    --per_device_train_batch_size 4 \
-    --per_device_eval_batch_size 8 --ddp_find_unused_parameters=False \
-    --do_train --do_eval --output_dir=runs \
+    --per_device_train_batch_size 4 --output_dir=runs/trainer_plugin \
     --max_train_samples=100
 ```
+
+## Other examples:
 
 ### Train a MuP Transformer for a few epochs on a simple task using HF's Accelerate API:
 

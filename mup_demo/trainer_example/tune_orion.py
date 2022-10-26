@@ -21,7 +21,7 @@ from orion.core.worker.trial import Trial
 from mup_demo.trainer_example.train import (
     _setup_logging,
     evaluation_loop,
-    parse_args,
+    parse_with_good_defaults,
     setup_trainer,
     train,
 )
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 def tune_using_orion():
     """Tunes the hyper-parameters of a MuP Transformer using Orion's Python API."""
 
-    model_args, data_args, training_args = parse_args()
+    model_args, data_args, training_args = parse_with_good_defaults()
 
     _setup_logging(training_args)
 
