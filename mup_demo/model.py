@@ -15,17 +15,17 @@ from mutransformers import (
 
 from mup import make_base_shapes, set_base_shapes
 
+M = TypeVar("M", bound=PreTrainedModel)
+
 ConfigType = TypeVar("ConfigType", bound=PretrainedConfig)
+BertModelType = TypeVar("BertModelType", bound=BertPreTrainedModel)
+GPT2ModelType = TypeVar("GPT2ModelType", bound=GPT2LMHeadModel)
 
 
 def _replace(model_config: ConfigType, **kwargs) -> ConfigType:
     delta_config = model_config.to_dict()
     delta_config.update(**kwargs)
     return type(model_config).from_dict(delta_config)
-
-
-M = TypeVar("M", bound=PreTrainedModel)
-BertModelType = TypeVar("BertModelType", bound=BertPreTrainedModel)
 
 
 def get_bert_model(config: BertConfig, model_type: type[BertModelType]) -> BertModelType:
@@ -57,9 +57,6 @@ def get_bert_model(config: BertConfig, model_type: type[BertModelType]) -> BertM
     print(f"Total parameters in the delta model:  {delta_model.num_parameters()}")
     print(f"Total parameters in the target model: {target_model.num_parameters()}")
     return target_model
-
-
-GPT2ModelType = TypeVar("GPT2ModelType", bound=GPT2LMHeadModel)
 
 
 def get_gpt2_model(

@@ -19,19 +19,10 @@ Here is what each file contains:
 
 ```console
 mup_demo
-├── manual_example             # Folder containing a 'manual' example using HF's Accelerate API
-│   ├── data.py                  # Data loading and preprocessing
-│   ├── train.py                 # Manual training script                 (runnable from the CLI)
-│   └── tune.py                  # Tuning script with Orion's Python API  (runnable from the CLI)
-├── trainer_example            # Folder containing a 'trainer' example using HF's Trainer API
-│   ├── mup_trainer_plugin.py    # "Plugin" for the HF Trainer API for MuP
-│   ├── hpsearch_plugin.py       # New base class for potential HPO "Plugins" for the HuggingFace Trainer API.
-│   ├── orion_hpsearch_plugin.py # "Plugin" for the HF Trainer API for Orion
-│   ├── train.py                 # Training script with HF's Trainer API  (runnable from the CLI)
-│   ├── tune_orion.py            # Tuning script using Orion's Python API (runnable from the CLI)
-│   └── tune_trainer.py          # Tuning script using the proposed HPSearch Plugin API (runnable from the CLI)
-├── model.py                   # Model creation functions common to both examples
-└── utils.py                   # Utility functions common to both examples
+├── model.py              # Model creation functions
+└── utils.py              # Utility functions common to both examples
+├── train.py              # Training script with HF's Trainer API  (runnable from the CLI)
+├── train_big_model.py    # Fetches the best trial from the sweep, trains scaled-up model.
 ```
 
 ## Example commands:

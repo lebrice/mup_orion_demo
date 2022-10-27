@@ -60,24 +60,22 @@ from transformers import (
     PretrainedConfig,
     PreTrainedModel,
     PreTrainedTokenizerBase,
-    Trainer,
 )
+from transformers import Trainer as _Trainer
 from transformers import TrainingArguments as _TrainingArguments
 from transformers import default_data_collator, is_torch_tpu_available, set_seed
 from transformers.testing_utils import CaptureLogger
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.training_args import ExplicitEnum
+from transformers.utils.logging import get_logger
 
 from mup_demo.model import get_gpt2_model
-from mup_demo.trainer_example.hpsearch_plugin import NewHPSearchAPIMixin
-from mup_demo.trainer_example.mup_trainer_plugin import MupTrainerPlugin
+from mup_demo.mup_trainer_plugin import patch_trainer_for_mup
 
+logger = get_logger(__name__)
 
-class CustomTrainer(NewHPSearchAPIMixin, MupTrainerPlugin):
-    pass
-
-
-logger = logging.getLogger(__name__)
+# Apply the 'patch' to the Trainer class so it uses the mup optimizers.
+patch_trainer_for_mup()
 
 
 MODEL_CONFIG_CLASSES = list(MODEL_FOR_CAUSAL_LM_MAPPING.keys())
@@ -103,6 +101,7 @@ class ModelArguments:
             + ", ".join(MODEL_TYPES)
         },
     )
+
     config_overrides: str | None = None
     """Override some existing default config settings when a model is trained from scratch.
     Example: "n_embd=10,resid_pdrop=0.2,scale_attn_weights=false,summary_type=cls_index"
@@ -217,6 +216,27 @@ class TrainingArguments(_TrainingArguments):
         super().__post_init__()
 
 
+# Apply a small patch to the Trainer class, to allow the auto_find_batch_size to work properly.
+class Trainer(_Trainer):
+    def _inner_training_loop(
+        self,
+        batch_size: int,
+        args: TrainingArguments,
+        resume_from_checkpoint=None,
+        trial=None,
+        ignore_keys_for_eval=None,
+    ):
+        # NOTE: Fix a bug here in the base class:
+        args.per_device_train_batch_size = batch_size
+        return super()._inner_training_loop(
+            batch_size=batch_size,
+            args=args,
+            resume_from_checkpoint=resume_from_checkpoint,
+            trial=trial,
+            ignore_keys_for_eval=ignore_keys_for_eval,
+        )
+
+
 def _raise_if_bad_extension(file_path: str, attr_name: str):
     extension = file_path.split(".")[-1]
     if extension not in ["csv", "json", "txt"]:
@@ -228,7 +248,11 @@ def parse_args(
     default_data_args: DataTrainingArguments | None = None,
     default_training_args: TrainingArguments | None = None,
 ) -> tuple[ModelArguments, DataTrainingArguments, TrainingArguments]:
-    # Add the arguments using [SimpleParsing](https://www.github.com/lebrice/SimpleParsing):
+    """Parse the model, data, and training arguments from the command-line.
+
+    Uses [SimpleParsing](https://www.github.com/lebrice/SimpleParsing), an alternative to the
+    HFArgumentParser, which also uses dataclasses to create argparse arguments.
+    """
     parser = simple_parsing.ArgumentParser(description=__doc__, add_config_path_arg=True)
     parser.add_arguments(ModelArguments, dest="model", default=default_model_args)
     parser.add_arguments(DataTrainingArguments, dest="data", default=default_data_args)
@@ -272,18 +296,18 @@ def parse_with_good_defaults() -> tuple[ModelArguments, DataTrainingArguments, T
             do_eval=True,
             output_dir="runs/tune_plugin_api",
             num_train_epochs=1,
-            evaluation_strategy="no",
-            logging_strategy="steps",
-            save_strategy="steps",
-            hub_strategy="every_save",
-            optim="adamw_hf",
+            # evaluation_strategy="no",
+            # logging_strategy="steps",
+            # save_strategy="steps",
+            # hub_strategy="every_save",
+            # optim="adamw_hf",
         ),
     )
 
 
 def main():
-    # See all possible arguments in src/transformers/training_args.py
-    # or by passing the --help flag to this script.
+    # See all possible arguments in the TrainingArguments class, or by passing the --help flag to
+    # this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
     model_args, data_args, training_args = parse_with_good_defaults()
 
@@ -301,6 +325,7 @@ def main():
     if training_args.do_eval:
         metrics = evaluation_loop(trainer=trainer, model_args=model_args, data_args=data_args)
 
+    # Optional Post-run stuff: creating a model card, uploading the model to the hub, etc.
     kwargs = {
         "finetuned_from": model_args.model_name_or_path,
         "tasks": "text-generation",
@@ -312,18 +337,21 @@ def main():
             kwargs["dataset"] = f"{data_args.dataset_name} {data_args.dataset_config_name}"
         else:
             kwargs["dataset"] = data_args.dataset_name
-
     if training_args.push_to_hub:
         trainer.push_to_hub(**kwargs)
     else:
         trainer.create_model_card(**kwargs)
+    #
 
     if training_args.do_eval:
         assert metrics is not None
-        objective = metrics["eval_loss"]
-        from orion.client import report_objective
+        from orion.client import report_results
 
-        report_objective(objective, name="eval_loss")
+        objective = metrics["eval_loss"]
+        report_results(
+            [dict(name="objective", type="objective", value=objective)]
+            + [dict(name=key, type="statistic", value=value) for key, value in metrics.items()]
+        )
 
     return metrics
 
@@ -384,7 +412,7 @@ def setup_trainer(
     model_args: ModelArguments,
     data_args: DataTrainingArguments,
     training_args: TrainingArguments,
-) -> CustomTrainer:
+) -> Trainer:
     # Sending telemetry. Tracking the example usage helps us better allocate resources to maintain them. The
     # information sent is the one passed as arguments along with your Python/PyTorch versions.
     # send_example_telemetry("run_clm", model_args, data_args)
@@ -467,7 +495,7 @@ def setup_trainer(
     assert train_dataset is not None
 
     # Initialize our Trainer
-    trainer = CustomTrainer(
+    trainer = Trainer(
         model_init=model_init,
         args=training_args,
         train_dataset=train_dataset,
@@ -646,12 +674,10 @@ def _get_tokenizer(
 
 
 def make_model(
-    trial: Any | None,
     config: transformers.PretrainedConfig,
     model_args: ModelArguments,
     tokenizer: PreTrainedTokenizerBase,
 ) -> PreTrainedModel:
-    logger.debug(f"Trial: {trial}")
 
     model: PreTrainedModel
     if isinstance(config, mutransformers.GPT2Config):
@@ -678,7 +704,6 @@ def make_model(
         model = AutoModelForCausalLM.from_config(config)
         n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
         logger.info(f"Training new model from scratch - Total size={n_params/2**20:.2f}M params")
-    # FIXME:
 
     model.resize_token_embeddings(len(tokenizer))
     return model
