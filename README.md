@@ -44,6 +44,17 @@ orion hunt -n mup_debug \
         --max_train_samples=100
 ```
 
+```console
+orion hunt -n mup_debug --exp-max-trials=5 --working-dir runs \
+    WANDB_LOG_MODEL=1 WANDB_WATCH=all WANDB_PROJECT=mup_demo accelerate launch mup_demo/train.py \
+    --output_dir runs/{exp.name}/{trial.id} --run_name {trial.id} \
+    --learning_rate~"loguniform(1e-7,1e-4)" \
+    --config_name_or_path=small_gpt2_config.json
+
+
+
+```
+
 ### Running a sweep with Orion's Python API:
 
 ```console

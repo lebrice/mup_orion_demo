@@ -37,6 +37,7 @@ import os
 import sys
 from dataclasses import dataclass, field
 from itertools import chain
+from pathlib import Path
 from typing import Any, Callable
 
 import datasets
@@ -44,6 +45,7 @@ import evaluate
 import mutransformers
 import simple_parsing
 import transformers
+import yaml
 from datasets import DatasetDict
 from datasets.load import load_dataset
 from simple_parsing.helpers import flag
@@ -56,7 +58,6 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     EvalPrediction,
-    HfArgumentParser,
     PretrainedConfig,
     PreTrainedModel,
     PreTrainedTokenizerBase,
@@ -77,11 +78,15 @@ logger = get_logger(__name__)
 # Apply the 'patch' to the Trainer class so it uses the mup optimizers.
 patch_trainer_for_mup()
 
+# TODO: Could try to add the mup-variants in these lists here. There's an issue where the config
+# files get parsed into the GPT2Config from HF rather than the GPT2Config from mutransformers.
 
 MODEL_CONFIG_CLASSES = list(MODEL_FOR_CAUSAL_LM_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
-
-# TODO: Could try to add the mup-variants in these lists here?
+# NOTE: Not sure this does anything..
+MODEL_FOR_CAUSAL_LM_MAPPING[transformers.GPT2Config] = mutransformers.GPT2LMHeadModel
+# assert False, MODEL_CONFIG_CLASSES
+# assert False, MODEL_FOR_CAUSAL_LM_MAPPING[transformers.GPT2Config]
 
 
 @dataclass
@@ -106,6 +111,10 @@ class ModelArguments:
     """Override some existing default config settings when a model is trained from scratch.
     Example: "n_embd=10,resid_pdrop=0.2,scale_attn_weights=false,summary_type=cls_index"
     """
+
+    # NOTE: Added this here.
+    config_path: Path | None = None
+    """ Pretrained config name or path if not the same as model_name """
 
     config_name: str | None = None
     """ Pretrained config name or path if not the same as model_name """
@@ -253,7 +262,7 @@ def parse_args(
     Uses [SimpleParsing](https://www.github.com/lebrice/SimpleParsing), an alternative to the
     HFArgumentParser, which also uses dataclasses to create argparse arguments.
     """
-    parser = simple_parsing.ArgumentParser(description=__doc__, add_config_path_arg=True)
+    parser = simple_parsing.ArgumentParser(description=__doc__, add_config_path_arg=False)
     parser.add_arguments(ModelArguments, dest="model", default=default_model_args)
     parser.add_arguments(DataTrainingArguments, dest="data", default=default_data_args)
     parser.add_arguments(TrainingArguments, dest="training", default=default_training_args)
@@ -262,19 +271,19 @@ def parse_args(
     data_args: DataTrainingArguments
     training_args: TrainingArguments
 
-    if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
-        parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
-        # If we pass only one argument to the script and it's the path to a json file,
-        # let's parse it to get our arguments.
-        model_args, data_args, training_args = parser.parse_json_file(
-            json_file=os.path.abspath(sys.argv[1])
-        )
-    else:
-        args = parser.parse_args()
-        # model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-        model_args = args.model
-        data_args = args.data
-        training_args = args.training
+    # if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
+    # parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
+    # # If we pass only one argument to the script and it's the path to a json file,
+    # # let's parse it to get our arguments.
+    # model_args, data_args, training_args = parser.parse_json_file(
+    #     json_file=os.path.abspath(sys.argv[1])
+    # )
+    # else:
+    args = parser.parse_args()
+    # model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+    model_args = args.model
+    data_args = args.data
+    training_args = args.training
 
     return model_args, data_args, training_args
 
@@ -282,20 +291,23 @@ def parse_args(
 def parse_with_good_defaults() -> tuple[ModelArguments, DataTrainingArguments, TrainingArguments]:
     return parse_args(
         default_model_args=ModelArguments(
-            model_name_or_path="gpt2",
+            model_type="gpt2",
+            tokenizer_name="gpt2",
         ),
         default_data_args=DataTrainingArguments(
             dataset_name="wikitext",
             dataset_config_name="wikitext-2-raw-v1",
         ),
         default_training_args=TrainingArguments(
+            output_dir="runs/debug",
             per_device_train_batch_size=4,
             per_device_eval_batch_size=8,
             ddp_find_unused_parameters=False,
             do_train=True,
             do_eval=True,
-            output_dir="runs/tune_plugin_api",
             num_train_epochs=1,
+            auto_find_batch_size=True,
+            # output_dir="runs/tune_plugin_api",
             # evaluation_strategy="no",
             # logging_strategy="steps",
             # save_strategy="steps",
@@ -454,8 +466,10 @@ def setup_trainer(
         "cache_dir": model_args.cache_dir,
         "revision": model_args.model_revision,
         "use_auth_token": True if model_args.use_auth_token else None,
+        # TODO: Could add some hparams to control the width of the model here!
     }
     config = _get_model_config(model_args=model_args, config_kwargs=config_kwargs)
+    logger.info("Non-default config values:\n" + yaml.dump(config.to_diff_dict()))
 
     model_init: Callable[[], PreTrainedModel] = functools.partial(
         make_model,
@@ -616,16 +630,26 @@ def get_datasets(data_args: DataTrainingArguments, model_args: ModelArguments) -
 def _get_model_config(
     model_args: ModelArguments, config_kwargs: dict[str, Any]
 ) -> PretrainedConfig:
+    """TODO: Could probably be simplified considerably. The way I'm injecting the MuP Variant is
+    quite hacky too.
+
+    IDEA: Use --pretrained=True|False, --model_type, and --config-name only?
+    """
     # TODO: Make this cleaner. Currently just overwriting the config with the mup variant.
-    if (model_args.config_name or model_args.model_name_or_path) == "gpt2":
-        config = mutransformers.GPT2Config.from_pretrained("gpt2", **config_kwargs)
-    elif model_args.config_name:
-        config = AutoConfig.from_pretrained(model_args.config_name, **config_kwargs)
-    elif model_args.model_name_or_path:
-        config = AutoConfig.from_pretrained(model_args.model_name_or_path, **config_kwargs)
-    elif model_args.model_type == "gpt2":
-        config = mutransformers.GPT2Config(**config_kwargs)
-        assert isinstance(config, mutransformers.GPT2Config)
+    if (model_args.config_name or model_args.model_type) == "gpt2":
+        logger.info("Using the MuP Variant of the GPT2 config")
+        config_class = mutransformers.GPT2Config
+    else:
+        config_class = AutoConfig
+
+    if model_args.config_path:
+        config = config_class.from_json_file(model_args.config_path)
+        if model_args.config_overrides:
+            config.update_from_string(model_args.config_overrides)
+    elif model_args.model_name_or_path or model_args.config_name:
+        config = config_class.from_pretrained(
+            model_args.model_name_or_path or model_args.config_name, **config_kwargs
+        )
     else:
         assert model_args.model_type is not None
         logger.warning("You are instantiating a new config instance from scratch.")
@@ -680,11 +704,13 @@ def make_model(
 ) -> PreTrainedModel:
 
     model: PreTrainedModel
+
     if isinstance(config, mutransformers.GPT2Config):
         logger.info("Creating a MuP GPT2 model.")
         model = get_gpt2_model(config, model_type=mutransformers.GPT2LMHeadModel)
         n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
         logger.info(f"Model size={n_params/2**20:.2f}M params")
+
     elif isinstance(config, mutransformers.RobertaConfig):
         logger.info("Creating a MuP Roberta model.")
         raise NotImplementedError("TODO: Get the mup variant of the Roberta model.")
