@@ -12,8 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Fine-tuning the library models for causal language modeling (GPT, GPT-2, CTRL, ...) on a text
-file or a dataset.
+"""Trains a GPT2 model with MuP parametrization on a causal language modeling task.
 
 Here is the full list of checkpoints on the hub that can be fine-tuned by this script:
 https://huggingface.co/models?filter=text-generation
@@ -21,11 +20,10 @@ https://huggingface.co/models?filter=text-generation
 
 Example command:
 ```
-accelerate launch mup_demo/trainer_example.py \
-    --model_name_or_path gpt2 --dataset_name wikitext \
-    --dataset_config_name wikitext-2-raw-v1 --per_device_train_batch_size 4 \
-    --per_device_eval_batch_size 8 --ddp_find_unused_parameters=False \
-    --do_train --do_eval --output_dir test_run
+accelerate launch mup_demo/trainer.py \
+    --dataset_name wikitext --dataset_config_name wikitext-2-raw-v1 \
+    --per_device_train_batch_size 4 --per_device_eval_batch_size 8 \
+    --output_dir test_run
 ```
 """
 from __future__ import annotations
@@ -35,10 +33,9 @@ import logging
 import math
 import os
 import sys
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from itertools import chain
-from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 import datasets
 import evaluate
@@ -46,15 +43,13 @@ import mutransformers
 import simple_parsing
 import transformers
 import yaml
-from datasets import DatasetDict
+from datasets.dataset_dict import DatasetDict
 from datasets.load import load_dataset
 from simple_parsing.helpers import flag
 from torch import Tensor
 from torch.utils.data import Dataset
 from transformers import (
-    CONFIG_MAPPING,
     MODEL_FOR_CAUSAL_LM_MAPPING,
-    AutoConfig,
     AutoModelForCausalLM,
     AutoTokenizer,
     EvalPrediction,
@@ -81,7 +76,7 @@ patch_trainer_for_mup()
 # TODO: Could try to add the mup-variants in these lists here. There's an issue where the config
 # files get parsed into the GPT2Config from HF rather than the GPT2Config from mutransformers.
 
-MODEL_CONFIG_CLASSES = list(MODEL_FOR_CAUSAL_LM_MAPPING.keys())
+MODEL_CONFIG_CLASSES: list[type[PretrainedConfig]] = list(MODEL_FOR_CAUSAL_LM_MAPPING.keys())  # type: ignore
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 # NOTE: Not sure this does anything..
 MODEL_FOR_CAUSAL_LM_MAPPING[transformers.GPT2Config] = mutransformers.GPT2LMHeadModel
@@ -89,35 +84,160 @@ MODEL_FOR_CAUSAL_LM_MAPPING[transformers.GPT2Config] = mutransformers.GPT2LMHead
 # assert False, MODEL_FOR_CAUSAL_LM_MAPPING[transformers.GPT2Config]
 
 
+# TODO: Replace these ModelArguments with a dataclass version of the GPT2Config?
+
+
+@dataclass
+class GPT2ConfigArgs:
+    """Dataclass containing the fields of the GPT2Config class, so we can change them from the CLI
+    more easily than with the 'config_overrides' argument from the example.
+
+    NOTE: Unsure why HuggingFace didn't opt to use a dataclass for the GPT2Config class. It would
+    have made this unnecessary.
+    """
+
+    vocab_size: int = 50257
+    """Vocabulary size of the GPT-2 model. Defines the number of different tokens that can be represented by the
+        `inputs_ids` passed when calling [`GPT2Model`] or [`TFGPT2Model`].
+    """
+
+    n_positions: int = 1024
+    """The maximum sequence length that this model might ever be used with. Typically set this to something large
+    just in case (e.g., 512 or 1024 or 2048).
+    """
+
+    n_embd: int = 768
+    """ Dimensionality of the embeddings and hidden states. """
+
+    n_layer: int = 12
+    """ Number of hidden layers in the Transformer encoder. """
+
+    n_head: int = 12
+    """ Number of attention heads for each attention layer in the Transformer encoder."""
+
+    n_inner: int | None = None
+    """Dimensionality of the inner feed-forward layers. `None` will set it to 4 times n_embd """
+
+    activation_function: Literal["relu", "silu", "gelu", "tanh", "gelu_new"] = "gelu"
+    """ Activation function, to be selected in the list `["relu", "silu", "gelu", "tanh", "gelu_new"]`.
+    """
+
+    resid_pdrop: float = 0.1
+    """The dropout probability for all fully connected layers in the embeddings, encoder, and
+    pooler.
+    """
+
+    embd_pdrop: float = 0.1
+    """The dropout ratio for the embeddings. """
+
+    attn_pdrop: float = 0.1
+    """ The dropout ratio for the attention. """
+
+    layer_norm_epsilon: float = 1e-5
+    """ The epsilon to use in the layer normalization layers. """
+
+    initializer_range: float = 0.02
+    """The standard deviation of the truncated_normal_initializer for initializing all weight
+    matrices.
+    """
+
+    summary_type: Literal["last", "first", "mean", "cls_index", "attn"] = "cls_index"
+    """Argument used when doing sequence summary, used in the models [`GPT2DoubleHeadsModel`] and
+        [`TFGPT2DoubleHeadsModel`].
+
+        Has to be one of the following options:
+
+            - `"last"`: Take the last token hidden state (like XLNet).
+            - `"first"`: Take the first token hidden state (like BERT).
+            - `"mean"`: Take the mean of all tokens hidden states.
+            - `"cls_index"`: Supply a Tensor of classification token position (like GPT/GPT-2).
+            - `"attn"`: Not implemented now, use multi-head attention.
+    """
+
+    summary_use_proj: bool = True
+    """Argument used when doing sequence summary, used in the models [`GPT2DoubleHeadsModel`] and
+        [`TFGPT2DoubleHeadsModel`].
+
+        Whether or not to add a projection after the vector extraction.
+    """
+
+    summary_activation: str | None = None
+    """Argument used when doing sequence summary. Used in for the multiple choice head in
+        [`GPT2DoubleHeadsModel`].
+
+        Pass `"tanh"` for a tanh activation to the output, any other value will result in no activation.
+    """
+
+    summary_proj_to_labels: bool = True
+    """Argument used when doing sequence summary, used in the models [`GPT2DoubleHeadsModel`] and
+        [`TFGPT2DoubleHeadsModel`].
+        Whether the projection outputs should have `config.num_labels` or `config.hidden_size` classes.
+    """
+    summary_first_dropout: float = 0.1
+    """Argument used when doing sequence summary, used in the models [`GPT2DoubleHeadsModel`] and
+    [`TFGPT2DoubleHeadsModel`]. The dropout ratio to be used after the projection and activation.
+    """
+
+    scale_attn_weights: bool = True
+    """Scale attention weights by dividing by sqrt(hidden_size)."""
+
+    use_cache: bool = True
+    """ Whether or not the model should return the last key/values attentions (not used by all
+    models).
+    """
+
+    scale_attn_by_inverse_layer_idx: bool = False
+    """Whether to additionally scale attention weights by `1 / layer_idx + 1`."""
+
+    reorder_and_upcast_attn: bool = False
+    """Whether to scale keys (K) prior to computing attention (dot-product) and upcast attention
+    dot-product/softmax to float() when training with mixed precision.
+    """
+
+    def to_config(self) -> mutransformers.GPT2Config:
+        """Convert this dataclass to a GPT2Config instance."""
+        return mutransformers.GPT2Config(**asdict(self))
+
+    def make_model(self) -> mutransformers.GPT2LMHeadModel:
+        # NOTE: This currently doesn't allow for finetuning a model.
+        config = self.to_config()
+        return get_gpt2_model(config, model_type=mutransformers.GPT2LMHeadModel)
+
+
 @dataclass
 class ModelArguments:
     """Arguments pertaining to which model/config/tokenizer we are going to fine-tune, or train
     from scratch."""
 
-    model_name_or_path: str | None = None
-    """The model checkpoint for weights initialization.Don't set if you want to train a model from
-    scratch.
+    # model_name_or_path: str | None = None
+    # """The model checkpoint for weights initialization.Don't set if you want to train a model from
+    # scratch.
+    # """
+
+    model: GPT2ConfigArgs = field(default_factory=GPT2ConfigArgs)
+    """Configuration options for the model. This is used to create the GPT2Config object, which is
+    used to create the model.
     """
 
-    model_type: str | None = field(
-        default=None,
-        metadata={
-            "help": "If training from scratch, pass a model type from the list: "
-            + ", ".join(MODEL_TYPES)
-        },
-    )
+    # model_type: str | None = field(
+    #     default=None,
+    #     metadata={
+    #         "help": "If training from scratch, pass a model type from the list: "
+    #         + ", ".join(MODEL_TYPES)
+    #     },
+    # )
 
-    config_overrides: str | None = None
-    """Override some existing default config settings when a model is trained from scratch.
-    Example: "n_embd=10,resid_pdrop=0.2,scale_attn_weights=false,summary_type=cls_index"
-    """
+    # config_overrides: str | None = None
+    # """Override some existing default config settings when a model is trained from scratch.
+    # Example: "n_embd=10,resid_pdrop=0.2,scale_attn_weights=false,summary_type=cls_index"
+    # """
 
     # NOTE: Added this here.
-    config_path: Path | None = None
-    """ Pretrained config name or path if not the same as model_name """
+    # config_path: Path | None = None
+    # """ Pretrained config name or path if not the same as model_name """
 
-    config_name: str | None = None
-    """ Pretrained config name or path if not the same as model_name """
+    # config_name: str | None = None
+    # """ Pretrained config name or path if not the same as model_name """
 
     tokenizer_name: str | None = None
     """ Pretrained tokenizer name or path if not the same as model_name """
@@ -137,12 +257,13 @@ class ModelArguments:
     """
 
     def __post_init__(self):
-        if self.config_overrides is not None and (
-            self.config_name is not None or self.model_name_or_path is not None
-        ):
-            raise ValueError(
-                "--config_overrides can't be used in combination with --config_name or --model_name_or_path"
-            )
+        pass
+        # if self.config_overrides is not None and (
+        #     self.config_name is not None or self.model_name_or_path is not None
+        # ):
+        #     raise ValueError(
+        #         "--config_overrides can't be used in combination with --config_name or --model_name_or_path"
+        #     )
 
 
 @dataclass
@@ -262,7 +383,7 @@ def parse_args(
     Uses [SimpleParsing](https://www.github.com/lebrice/SimpleParsing), an alternative to the
     HFArgumentParser, which also uses dataclasses to create argparse arguments.
     """
-    parser = simple_parsing.ArgumentParser(description=__doc__, add_config_path_arg=False)
+    parser = simple_parsing.ArgumentParser(description=__doc__, add_config_path_arg=True)
     parser.add_arguments(ModelArguments, dest="model", default=default_model_args)
     parser.add_arguments(DataTrainingArguments, dest="data", default=default_data_args)
     parser.add_arguments(TrainingArguments, dest="training", default=default_training_args)
@@ -291,7 +412,7 @@ def parse_args(
 def parse_with_good_defaults() -> tuple[ModelArguments, DataTrainingArguments, TrainingArguments]:
     return parse_args(
         default_model_args=ModelArguments(
-            model_type="gpt2",
+            model=GPT2ConfigArgs(),
             tokenizer_name="gpt2",
         ),
         default_data_args=DataTrainingArguments(
@@ -337,23 +458,8 @@ def main():
     if training_args.do_eval:
         metrics = evaluation_loop(trainer=trainer, model_args=model_args, data_args=data_args)
 
-    # Optional Post-run stuff: creating a model card, uploading the model to the hub, etc.
-    kwargs = {
-        "finetuned_from": model_args.model_name_or_path,
-        "tasks": "text-generation",
-    }
-    if data_args.dataset_name is not None:
-        kwargs["dataset_tags"] = data_args.dataset_name
-        if data_args.dataset_config_name is not None:
-            kwargs["dataset_args"] = data_args.dataset_config_name
-            kwargs["dataset"] = f"{data_args.dataset_name} {data_args.dataset_config_name}"
-        else:
-            kwargs["dataset"] = data_args.dataset_name
-    if training_args.push_to_hub:
-        trainer.push_to_hub(**kwargs)
-    else:
-        trainer.create_model_card(**kwargs)
-    #
+    # NOTE: Removed some Optional Post-run stuff: creating a model card, uploading the model to
+    # the hub, etc.
 
     if training_args.do_eval:
         assert metrics is not None
@@ -462,13 +568,7 @@ def setup_trainer(
         training_args=training_args,
     )
 
-    config_kwargs = {
-        "cache_dir": model_args.cache_dir,
-        "revision": model_args.model_revision,
-        "use_auth_token": True if model_args.use_auth_token else None,
-        # TODO: Could add some hparams to control the width of the model here!
-    }
-    config = _get_model_config(model_args=model_args, config_kwargs=config_kwargs)
+    config = model_args.model.to_config()
     logger.info("Non-default config values:\n" + yaml.dump(config.to_diff_dict()))
 
     model_init: Callable[[], PreTrainedModel] = functools.partial(
@@ -501,7 +601,9 @@ def setup_trainer(
             # by preprocess_logits_for_metrics but we need to shift the labels
             labels = labels[:, 1:].reshape(-1)
             preds = preds[:, :-1].reshape(-1)
-            return metric.compute(predictions=preds, references=labels)
+            metrics = metric.compute(predictions=preds, references=labels)
+            assert isinstance(metrics, dict)
+            return metrics
 
         preprocess_logits_for_metrics = _preprocess_logits_for_metrics
         compute_metrics = _compute_metrics
@@ -518,12 +620,16 @@ def setup_trainer(
         # Data collator will default to DataCollatorWithPadding, so we change it.
         data_collator=default_data_collator,
         compute_metrics=compute_metrics,
-        preprocess_logits_for_metrics=preprocess_logits_for_metrics,  # type: ignore (should be marked as optional)
+        # NOTE: next arg has wrong annotation (should be marked as optional)
+        preprocess_logits_for_metrics=preprocess_logits_for_metrics,  # type: ignore
     )
+
+    trainer.add_callback
+
     return trainer
 
 
-def find_last_checkpoint(training_args: TrainingArguments) -> str | None:
+def find_last_checkpoint(training_args: _TrainingArguments) -> str | None:
     last_checkpoint = None
     if (
         os.path.isdir(training_args.output_dir)
@@ -627,40 +733,6 @@ def get_datasets(data_args: DataTrainingArguments, model_args: ModelArguments) -
     return raw_datasets
 
 
-def _get_model_config(
-    model_args: ModelArguments, config_kwargs: dict[str, Any]
-) -> PretrainedConfig:
-    """TODO: Could probably be simplified considerably. The way I'm injecting the MuP Variant is
-    quite hacky too.
-
-    IDEA: Use --pretrained=True|False, --model_type, and --config-name only?
-    """
-    # TODO: Make this cleaner. Currently just overwriting the config with the mup variant.
-    if (model_args.config_name or model_args.model_type) == "gpt2":
-        logger.info("Using the MuP Variant of the GPT2 config")
-        config_class = mutransformers.GPT2Config
-    else:
-        config_class = AutoConfig
-
-    if model_args.config_path:
-        config = config_class.from_json_file(model_args.config_path)
-        if model_args.config_overrides:
-            config.update_from_string(model_args.config_overrides)
-    elif model_args.model_name_or_path or model_args.config_name:
-        config = config_class.from_pretrained(
-            model_args.model_name_or_path or model_args.config_name, **config_kwargs
-        )
-    else:
-        assert model_args.model_type is not None
-        logger.warning("You are instantiating a new config instance from scratch.")
-        config = CONFIG_MAPPING[model_args.model_type]()
-        if model_args.config_overrides is not None:
-            logger.info(f"Overriding config: {model_args.config_overrides}")
-            config.update_from_string(model_args.config_overrides)
-            logger.info(f"New config: {config}")
-    return config
-
-
 def _setup_logging(training_args: TrainingArguments):
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -685,10 +757,6 @@ def _get_tokenizer(
 ) -> PreTrainedTokenizerBase:
     if model_args.tokenizer_name:
         tokenizer = AutoTokenizer.from_pretrained(model_args.tokenizer_name, **tokenizer_kwargs)
-    elif model_args.model_name_or_path:
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_args.model_name_or_path, **tokenizer_kwargs
-        )
     else:
         raise ValueError(
             "You are instantiating a new tokenizer from scratch. This is not supported by this script."
@@ -717,15 +785,16 @@ def make_model(
         # model = get_roberta_model(config, model_type=mutransformers.RobertaForCausalLM)
         # n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
         # logger.info(f"Model size={n_params/2**20:.2f}M params")
-    elif model_args.model_name_or_path:
-        model = AutoModelForCausalLM.from_pretrained(
-            model_args.model_name_or_path,
-            from_tf=bool(".ckpt" in model_args.model_name_or_path),
-            config=config,
-            cache_dir=model_args.cache_dir,
-            revision=model_args.model_revision,
-            use_auth_token=True if model_args.use_auth_token else None,
-        )
+    # NOTE: Disabling the fine-tuning part of this example for now.
+    # elif model_args.model_name_or_path:
+    #     model = AutoModelForCausalLM.from_pretrained(
+    #         model_args.model_name_or_path,
+    #         from_tf=bool(".ckpt" in model_args.model_name_or_path),
+    #         config=config,
+    #         cache_dir=model_args.cache_dir,
+    #         revision=model_args.model_revision,
+    #         use_auth_token=True if model_args.use_auth_token else None,
+    #     )
     else:
         model = AutoModelForCausalLM.from_config(config)
         n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
@@ -822,8 +891,8 @@ def preprocess_datasets(
             desc=f"Grouping texts in chunks of {block_size}",
         )
 
-    train_dataset: Dataset | None = None
-    eval_dataset: Dataset | None = None
+    train_dataset: Dataset | datasets.arrow_dataset.Dataset | None = None
+    eval_dataset: Dataset | datasets.arrow_dataset.Dataset | None = None
 
     if training_args.do_train:
         if "train" not in tokenized_datasets:
