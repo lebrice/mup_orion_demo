@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from functools import partial
 from typing import TypeVar
 
@@ -12,6 +13,7 @@ from mutransformers import (
     PretrainedConfig,
     PreTrainedModel,
 )
+from transformers.utils import logging
 
 from mup import make_base_shapes, set_base_shapes
 
@@ -25,7 +27,19 @@ GPT2ModelType = TypeVar("GPT2ModelType", bound=GPT2LMHeadModel)
 def _replace(model_config: ConfigType, **kwargs) -> ConfigType:
     delta_config = model_config.to_dict()
     delta_config.update(**kwargs)
-    return type(model_config).from_dict(delta_config)
+    # NOTE: would be nice to avoid all the logging that goes on when calling `from_dict`..
+    # return type(model_config)(**delta_config)
+    with temp_change_verbosity(logging.ERROR):
+        config = type(model_config).from_dict(delta_config)
+    return config
+
+
+@contextlib.contextmanager
+def temp_change_verbosity(verbosity: int = logging.ERROR):
+    verbosity = logging.get_verbosity()
+    logging.set_verbosity(logging.ERROR)
+    yield
+    logging.set_verbosity(verbosity)
 
 
 def get_bert_model(config: BertConfig, model_type: type[BertModelType]) -> BertModelType:

@@ -28,6 +28,7 @@ accelerate launch mup_demo/trainer.py \
 """
 from __future__ import annotations
 
+import dataclasses
 import functools
 import logging
 import math
@@ -65,8 +66,10 @@ from transformers.trainer_utils import get_last_checkpoint
 from transformers.training_args import ExplicitEnum
 from transformers.utils.logging import get_logger
 
+import wandb
 from mup_demo.model import get_gpt2_model
 from mup_demo.mup_trainer_plugin import patch_trainer_for_mup
+from mup_demo.utils import is_main_process
 
 logger = get_logger(__name__)
 
@@ -610,6 +613,20 @@ def setup_trainer(
 
     assert train_dataset is not None
 
+    # note: This isn't working, it's causing it to re-init.
+    if is_main_process():
+        wandb.init(
+            project="mup_debug",
+            name=training_args.run_name,
+            config={
+                "model": dataclasses.asdict(model_args),
+                "data": dataclasses.asdict(data_args),
+                "training_args": dataclasses.asdict(training_args),
+            },
+            # tags=
+        )
+    training_args.report_to = []
+
     # Initialize our Trainer
     trainer = Trainer(
         model_init=model_init,
@@ -623,9 +640,13 @@ def setup_trainer(
         # NOTE: next arg has wrong annotation (should be marked as optional)
         preprocess_logits_for_metrics=preprocess_logits_for_metrics,  # type: ignore
     )
+    # TODO: Potentially initialize wandb manually, to get more fine-grained control over what is
+    # logged.
+    from transformers.integrations import WandbCallback
 
-    trainer.add_callback
-
+    if is_main_process():
+        assert wandb.run is not None
+        trainer.add_callback(WandbCallback())
     return trainer
 
 
