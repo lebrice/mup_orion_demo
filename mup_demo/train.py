@@ -36,6 +36,7 @@ import os
 import sys
 from dataclasses import asdict, dataclass, field
 from itertools import chain
+from pathlib import Path
 from typing import Any, Callable, Literal
 
 import datasets
@@ -46,6 +47,7 @@ import transformers
 from datasets.dataset_dict import DatasetDict
 from datasets.load import load_dataset
 from simple_parsing.helpers import flag
+from simple_parsing.helpers.serialization.serializable import save_yaml
 from torch import Tensor
 from torch.utils.data import Dataset
 from transformers import (
@@ -469,6 +471,12 @@ def train(trainer: Trainer, model_args: ModelArguments, data_args: DataTrainingA
     last_checkpoint = find_last_checkpoint(training_args)
     checkpoint = training_args.resume_from_checkpoint or last_checkpoint or None
 
+    log_dir = Path(training_args.output_dir)
+    log_dir.mkdir(exist_ok=True, parents=True)  # Make sure the log dir exists
+    save_yaml(training_args, log_dir / "training_args.yaml")
+    save_yaml(model_args, log_dir / "model_args.yaml")
+    save_yaml(data_args, log_dir / "data_args.yaml")
+
     train_result = trainer.train(resume_from_checkpoint=checkpoint)
     trainer.save_model()  # Saves the tokenizer too for easy upload
 
@@ -637,7 +645,7 @@ def find_last_checkpoint(training_args: _TrainingArguments) -> str | None:
         and not training_args.overwrite_output_dir
     ):
         last_checkpoint = get_last_checkpoint(training_args.output_dir)
-
+        # NOTE: This is being a little bit annoying.
         if last_checkpoint is None and len(os.listdir(training_args.output_dir)) > 0:
             raise ValueError(
                 f"Output directory ({training_args.output_dir}) already exists and is not empty. "
