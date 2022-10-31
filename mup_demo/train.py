@@ -43,7 +43,6 @@ import evaluate
 import mutransformers
 import simple_parsing
 import transformers
-import yaml
 from datasets.dataset_dict import DatasetDict
 from datasets.load import load_dataset
 from simple_parsing.helpers import flag
@@ -51,7 +50,6 @@ from torch import Tensor
 from torch.utils.data import Dataset
 from transformers import (
     MODEL_FOR_CAUSAL_LM_MAPPING,
-    AutoModelForCausalLM,
     AutoTokenizer,
     EvalPrediction,
     PretrainedConfig,
@@ -144,42 +142,8 @@ class GPT2ConfigArgs:
     matrices.
     """
 
-    summary_type: Literal["last", "first", "mean", "cls_index", "attn"] = "cls_index"
-    """Argument used when doing sequence summary, used in the models [`GPT2DoubleHeadsModel`] and
-        [`TFGPT2DoubleHeadsModel`].
-
-        Has to be one of the following options:
-
-            - `"last"`: Take the last token hidden state (like XLNet).
-            - `"first"`: Take the first token hidden state (like BERT).
-            - `"mean"`: Take the mean of all tokens hidden states.
-            - `"cls_index"`: Supply a Tensor of classification token position (like GPT/GPT-2).
-            - `"attn"`: Not implemented now, use multi-head attention.
-    """
-
-    summary_use_proj: bool = True
-    """Argument used when doing sequence summary, used in the models [`GPT2DoubleHeadsModel`] and
-        [`TFGPT2DoubleHeadsModel`].
-
-        Whether or not to add a projection after the vector extraction.
-    """
-
-    summary_activation: str | None = None
-    """Argument used when doing sequence summary. Used in for the multiple choice head in
-        [`GPT2DoubleHeadsModel`].
-
-        Pass `"tanh"` for a tanh activation to the output, any other value will result in no activation.
-    """
-
-    summary_proj_to_labels: bool = True
-    """Argument used when doing sequence summary, used in the models [`GPT2DoubleHeadsModel`] and
-        [`TFGPT2DoubleHeadsModel`].
-        Whether the projection outputs should have `config.num_labels` or `config.hidden_size` classes.
-    """
-    summary_first_dropout: float = 0.1
-    """Argument used when doing sequence summary, used in the models [`GPT2DoubleHeadsModel`] and
-    [`TFGPT2DoubleHeadsModel`]. The dropout ratio to be used after the projection and activation.
-    """
+    # NOTE: Omitting the summary_* fields, since they're not used in the model. They're only used
+    # when doing a sentence summarization task.
 
     scale_attn_weights: bool = True
     """Scale attention weights by dividing by sqrt(hidden_size)."""
@@ -197,14 +161,32 @@ class GPT2ConfigArgs:
     dot-product/softmax to float() when training with mixed precision.
     """
 
+    attn_mult: float | None = None
+    """ "Attention key-projection weight multiplier alpha_{attn}" from the mup paper.
+    If set to None, take the value of `(self.hidden_size / self.num_attention_heads)**0.5`.
+    """
+
+    readout_zero_init: bool = False
+    query_zero_init: bool = False
+
     def to_config(self) -> mutransformers.GPT2Config:
         """Convert this dataclass to a GPT2Config instance."""
+        config_kwargs = asdict(self)
+        config_kwargs.pop("readout_zero_init")  # Not a valid argument for GPT2Config
+        config_kwargs.pop("query_zero_init")  # Not a valid argument for GPT2Config
         return mutransformers.GPT2Config(**asdict(self))
 
     def make_model(self) -> mutransformers.GPT2LMHeadModel:
+        # NOTE: unused. Currently creating the config and then using it
         # NOTE: This currently doesn't allow for finetuning a model.
         config = self.to_config()
-        return get_gpt2_model(config, model_type=mutransformers.GPT2LMHeadModel)
+        logger.info(f"Creating a MuP-parametrized GPT2 model with config: {config}")
+        return get_gpt2_model(
+            config,
+            model_type=mutransformers.GPT2LMHeadModel,
+            readout_zero_init=self.readout_zero_init,
+            query_zero_init=self.query_zero_init,
+        )
 
 
 @dataclass
@@ -571,12 +553,9 @@ def setup_trainer(
         training_args=training_args,
     )
 
-    config = model_args.model.to_config()
-    logger.info("Non-default config values:\n" + yaml.dump(config.to_diff_dict()))
-
+    # logger.info("Non-default config values:\n" + yaml.dump(config.to_diff_dict()))
     model_init: Callable[[], PreTrainedModel] = functools.partial(
         make_model,
-        config=config,
         tokenizer=tokenizer,
         model_args=model_args,
     )
@@ -787,39 +766,21 @@ def _get_tokenizer(
 
 
 def make_model(
-    config: transformers.PretrainedConfig,
     model_args: ModelArguments,
     tokenizer: PreTrainedTokenizerBase,
 ) -> PreTrainedModel:
 
     model: PreTrainedModel
+    logger.info("Creating a MuP GPT2 model.")
 
-    if isinstance(config, mutransformers.GPT2Config):
-        logger.info("Creating a MuP GPT2 model.")
-        model = get_gpt2_model(config, model_type=mutransformers.GPT2LMHeadModel)
-        n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
-        logger.info(f"Model size={n_params/2**20:.2f}M params")
+    # NOTE: Hard-coding to GPT2 model for simplicity.
+    # model = AutoModelForCausalLM.from_config(config)
+    model = model_args.model.make_model()
 
-    elif isinstance(config, mutransformers.RobertaConfig):
-        logger.info("Creating a MuP Roberta model.")
-        raise NotImplementedError("TODO: Get the mup variant of the Roberta model.")
-        # model = get_roberta_model(config, model_type=mutransformers.RobertaForCausalLM)
-        # n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
-        # logger.info(f"Model size={n_params/2**20:.2f}M params")
-    # NOTE: Disabling the fine-tuning part of this example for now.
-    # elif model_args.model_name_or_path:
-    #     model = AutoModelForCausalLM.from_pretrained(
-    #         model_args.model_name_or_path,
-    #         from_tf=bool(".ckpt" in model_args.model_name_or_path),
-    #         config=config,
-    #         cache_dir=model_args.cache_dir,
-    #         revision=model_args.model_revision,
-    #         use_auth_token=True if model_args.use_auth_token else None,
-    #     )
-    else:
-        model = AutoModelForCausalLM.from_config(config)
-        n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
-        logger.info(f"Training new model from scratch - Total size={n_params/2**20:.2f}M params")
+    n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
+    logger.info(f"Training new model from scratch - Total size={n_params/2**20:.2f}M params")
+    n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
+    logger.info(f"Model size={n_params/2**20:.2f}M params")
 
     model.resize_token_embeddings(len(tokenizer))
     return model

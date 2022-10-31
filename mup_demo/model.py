@@ -17,6 +17,8 @@ from transformers.utils import logging
 
 from mup import make_base_shapes, set_base_shapes
 
+logger = logging.get_logger(__name__)
+
 M = TypeVar("M", bound=PreTrainedModel)
 
 ConfigType = TypeVar("ConfigType", bound=PretrainedConfig)
@@ -110,4 +112,8 @@ def get_gpt2_model(
             query_zero_init=query_zero_init,
         )
     )
+    logger.info(f"Total parameters in the base model:   {base_model.num_parameters()}")
+    logger.info(f"Total parameters in the delta model:  {delta_model.num_parameters()}")
+    logger.info(f"Total parameters in the target model: {model.num_parameters()}")
+
     return model
