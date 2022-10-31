@@ -9,7 +9,7 @@ export WANDB_TAGS=$EXP_NAME
 
 orion hunt -n $EXP_NAME --exp-max-trials=50 --working-dir runs/$EXP_NAME \
     accelerate launch mup_demo/train.py \
-    --output_dir {exp.working_dir}/{trial.id} \
+    --output_dir {exp.working_dir}/{trial.id} --overwrite_output_dir=True \
     --run_name {exp.name}-{trial.id} \
     --load_best_model_at_end=True --metric_for_best_model=eval_loss --greater_is_better=False \
     --evaluation_strategy=steps \
