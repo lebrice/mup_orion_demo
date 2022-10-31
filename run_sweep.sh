@@ -1,6 +1,6 @@
 #!/usr/bin/bash
 
-EXP_NAME="mup_small"
+EXP_NAME="gpt2_256"
 
 export WANDB_LOG_MODEL=1
 export WANDB_WATCH=all
@@ -17,6 +17,7 @@ orion hunt -n $EXP_NAME --exp-max-trials=50 --working-dir runs/$EXP_NAME \
     --logging_steps=100 \
     --num_train_epochs=3 \
     --per_device_train_batch_size=16 --auto_find_batch_size=True \
+    --readout_zero_init=True --query_zero_init=True \
     --n_embd=256 --n_head=4 --n_layer=2 \
     --learning_rate~"loguniform(1e-7,1e-3)" \
     --dataset_name=wikitext --dataset_config_name=wikitext-2-raw-v1
