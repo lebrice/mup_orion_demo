@@ -492,6 +492,7 @@ def train(trainer: Trainer, model_args: ModelArguments, data_args: DataTrainingA
     trainer.log_metrics("train", metrics)
     trainer.save_metrics("train", metrics)
     trainer.save_state()
+    return metrics
 
 
 # Evaluation
@@ -603,7 +604,7 @@ def setup_trainer(
     # note: This isn't working, it's causing it to re-init.
     if is_main_process():
         wandb.init(
-            project="mup_debug",
+            project=os.environ.get("WANDB_PROJECT", "mup_debug"),
             name=training_args.run_name,
             config={
                 "model": dataclasses.asdict(model_args),
