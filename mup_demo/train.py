@@ -567,8 +567,8 @@ def setup_trainer(
             # tags=
         )
     # Prevent the Trainer from typing to create a wandb callback (we're adding it ourselves below).
-    if training_args.report_to and "wandb" in training_args.report_to:
-        training_args.report_to.remove("wandb")
+    # NOTE: can't use other reporting methods because of this line here.
+    training_args.report_to = []
 
     # Initialize our Trainer
     trainer = Trainer(
