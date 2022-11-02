@@ -36,7 +36,7 @@ import sys
 from dataclasses import asdict, dataclass, field
 from itertools import chain
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Callable, Literal
 
 import datasets
 import evaluate
@@ -60,12 +60,12 @@ from transformers import (
 from transformers import Trainer as _Trainer
 from transformers import TrainingArguments as _TrainingArguments
 from transformers import default_data_collator, is_torch_tpu_available, set_seed
+from transformers.integrations import WandbCallback
 from transformers.testing_utils import CaptureLogger
+from transformers.trainer import TrainOutput
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.training_args import ExplicitEnum
 from transformers.utils.logging import get_logger
-from transformers.integrations import WandbCallback
-from transformers.trainer import TrainOutput
 
 from mup_demo.model import get_gpt2_model
 from mup_demo.mup_trainer_plugin import patch_trainer_for_mup
@@ -566,7 +566,7 @@ def setup_trainer(
             },
             # tags=
         )
-    # Prevent the Trainer from typing to create a wandb callback (we're adding it outselves below).
+    # Prevent the Trainer from typing to create a wandb callback (we're adding it ourselves below).
     if training_args.report_to and "wandb" in training_args.report_to:
         training_args.report_to.remove("wandb")
 
@@ -600,7 +600,7 @@ def find_last_checkpoint(training_args: _TrainingArguments) -> str | None:
     ):
         last_checkpoint = get_last_checkpoint(training_args.output_dir)
         # NOTE: This is being a little bit annoying.
-        if last_checkpoint is None and len(list(Path(training_args.output_dir).glob("*.bin"))) > 0:
+        if last_checkpoint is None and len(os.listdir(training_args.output_dir)) > 0:
             logger.warning(
                 RuntimeWarning(
                     f"Output directory ({training_args.output_dir}) already exists and contains "

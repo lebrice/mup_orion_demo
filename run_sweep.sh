@@ -1,5 +1,3 @@
-#!/usr/bin/bash
-
 EXP_NAME="gpt2_256"
 
 # Optional: Set some wandb-related environment variables.
@@ -16,7 +14,7 @@ orion hunt -n $EXP_NAME --exp-max-trials=50 --working-dir runs/$EXP_NAME \
     --evaluation_strategy=steps \
     --save_strategy=steps \
     --logging_steps=100 \
-    --per_device_train_batch_size=16 --auto_find_batch_size=True \
+    --per_device_train_batch_size=32 --auto_find_batch_size=True \
     --readout_zero_init=True --query_zero_init=True \
     --dataset_name=wikitext --dataset_config_name=wikitext-2-raw-v1 \
     --learning_rate~"loguniform(1e-7,1e-2)" \
