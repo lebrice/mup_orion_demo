@@ -38,6 +38,8 @@ setup(
         "mila_datamodules @ git+https://www.github.com/lebrice/mila_datamodules.git",
         "simple-parsing",
         "filelock",
+        "orion",
+        "wandb",
     ],
     extras_require={
         "fairscale": ["fairscale"],

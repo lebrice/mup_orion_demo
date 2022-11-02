@@ -14,11 +14,10 @@
 # limitations under the License.
 """Trains a GPT2 model with MuP parametrization on a causal language modeling task.
 
-Here is the full list of checkpoints on the hub that can be fine-tuned by this script:
-https://huggingface.co/models?filter=text-generation
+Adapted from a HuggingFace language modeling example:
+https://github.com/huggingface/transformers/blob/main/examples/pytorch/language-modeling/run_clm.py
 
-
-Example command:
+Example command (make sure to run `accelerate config` first):
 ```
 accelerate launch mup_demo/trainer.py \
     --dataset_name wikitext --dataset_config_name wikitext-2-raw-v1 \
@@ -65,12 +64,17 @@ from transformers.testing_utils import CaptureLogger
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.training_args import ExplicitEnum
 from transformers.utils.logging import get_logger
+from transformers.integrations import WandbCallback
+from transformers.trainer import TrainOutput
 
-import wandb
 from mup_demo.model import get_gpt2_model
 from mup_demo.mup_trainer_plugin import patch_trainer_for_mup
 from mup_demo.utils import is_main_process
 
+try:
+    import wandb
+except ImportError:
+    wandb = None
 logger = get_logger(__name__)
 
 # Apply the 'patch' to the Trainer class so it uses the mup optimizers.
@@ -193,44 +197,19 @@ class GPT2ConfigArgs:
 
 @dataclass
 class ModelArguments:
-    """Arguments pertaining to which model/config/tokenizer we are going to fine-tune, or train
-    from scratch."""
+    """Configuration options about the model/config/tokenizer that will be trained.
 
-    # model_name_or_path: str | None = None
-    # """The model checkpoint for weights initialization.Don't set if you want to train a model from
-    # scratch.
-    # """
-
-    model: GPT2ConfigArgs = field(default_factory=GPT2ConfigArgs)
-    """Configuration options for the model. This is used to create the GPT2Config object, which is
-    used to create the model.
+    NOTE: In the original example from HF, the script can be used to finetune models from the hub.
+    Here, we only care about training a gpt2 model from scratch with the MuP parameterization.
     """
 
-    # model_type: str | None = field(
-    #     default=None,
-    #     metadata={
-    #         "help": "If training from scratch, pass a model type from the list: "
-    #         + ", ".join(MODEL_TYPES)
-    #     },
-    # )
+    model: GPT2ConfigArgs = field(default_factory=GPT2ConfigArgs)
+    """Configuration options for the model. This corresponds to the parameers of the GPT2Config
+    class which is used to create the model.
+    """
 
-    # config_overrides: str | None = None
-    # """Override some existing default config settings when a model is trained from scratch.
-    # Example: "n_embd=10,resid_pdrop=0.2,scale_attn_weights=false,summary_type=cls_index"
-    # """
-
-    # NOTE: Added this here.
-    # config_path: Path | None = None
-    # """ Pretrained config name or path if not the same as model_name """
-
-    # config_name: str | None = None
-    # """ Pretrained config name or path if not the same as model_name """
-
-    tokenizer_name: str | None = None
-    """ Pretrained tokenizer name or path if not the same as model_name """
-
-    cache_dir: str | None = None
-    """Where do you want to store the pretrained models downloaded from huggingface.co"""
+    tokenizer_name: str = "gpt2"
+    """ Pretrained tokenizer name or path."""
 
     use_fast_tokenizer: bool = flag(True)
     """Whether to use one of the fast tokenizer (backed by the tokenizers library) or not."""
@@ -242,15 +221,6 @@ class ModelArguments:
     """Will use the token generated when running `huggingface-cli login` (necessary to use this
     script with private models).
     """
-
-    def __post_init__(self):
-        pass
-        # if self.config_overrides is not None and (
-        #     self.config_name is not None or self.model_name_or_path is not None
-        # ):
-        #     raise ValueError(
-        #         "--config_overrides can't be used in combination with --config_name or --model_name_or_path"
-        #     )
 
 
 @dataclass
@@ -301,11 +271,10 @@ class DataTrainingArguments:
     def __post_init__(self):
         if self.dataset_name is None and self.train_file is None and self.validation_file is None:
             raise ValueError("Need either a dataset name or a training/validation file.")
-        else:
-            if self.train_file is not None:
-                _raise_if_bad_extension(self.train_file, "train_file")
-            if self.validation_file is not None:
-                _raise_if_bad_extension(self.validation_file, "validation_file")
+        if self.train_file:
+            _raise_if_bad_extension(self.train_file, "train_file")
+        if self.validation_file:
+            _raise_if_bad_extension(self.validation_file, "validation_file")
 
 
 @dataclass
@@ -343,7 +312,7 @@ class Trainer(_Trainer):
         trial=None,
         ignore_keys_for_eval=None,
     ):
-        # NOTE: Fix a bug here in the base class:
+        # NOTE: Fix a small bug here in the base class:
         args.per_device_train_batch_size = batch_size
         return super()._inner_training_loop(
             batch_size=batch_size,
@@ -379,16 +348,8 @@ def parse_args(
     data_args: DataTrainingArguments
     training_args: TrainingArguments
 
-    # if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
-    # parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
-    # # If we pass only one argument to the script and it's the path to a json file,
-    # # let's parse it to get our arguments.
-    # model_args, data_args, training_args = parser.parse_json_file(
-    #     json_file=os.path.abspath(sys.argv[1])
-    # )
-    # else:
     args = parser.parse_args()
-    # model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+
     model_args = args.model
     data_args = args.data
     training_args = args.training
@@ -410,28 +371,20 @@ def parse_with_good_defaults() -> tuple[ModelArguments, DataTrainingArguments, T
             output_dir="runs/debug",
             per_device_train_batch_size=4,
             per_device_eval_batch_size=8,
+            auto_find_batch_size=True,
             ddp_find_unused_parameters=False,
             do_train=True,
             do_eval=True,
             num_train_epochs=1,
-            auto_find_batch_size=True,
-            # output_dir="runs/tune_plugin_api",
-            # evaluation_strategy="no",
-            # logging_strategy="steps",
-            # save_strategy="steps",
-            # hub_strategy="every_save",
-            # optim="adamw_hf",
         ),
     )
 
 
 def main():
-    # See all possible arguments in the TrainingArguments class, or by passing the --help flag to
-    # this script.
-    # We now keep distinct sets of args, for a cleaner separation of concerns.
+    # Get the configurations for the training run from the command-line.
     model_args, data_args, training_args = parse_with_good_defaults()
 
-    # Setup logging
+    # Setup logging for HuggingFace.
     _setup_logging(training_args)
 
     trainer = setup_trainer(
@@ -461,8 +414,9 @@ def main():
     return metrics
 
 
-# Training
-def train(trainer: Trainer, model_args: ModelArguments, data_args: DataTrainingArguments):
+def train(
+    trainer: Trainer, model_args: ModelArguments, data_args: DataTrainingArguments
+) -> dict[str, float]:
     train_dataset = trainer.train_dataset
     assert train_dataset is not None
     training_args = trainer.args
@@ -477,7 +431,7 @@ def train(trainer: Trainer, model_args: ModelArguments, data_args: DataTrainingA
     save_yaml(model_args, log_dir / "model_args.yaml")
     save_yaml(data_args, log_dir / "data_args.yaml")
 
-    train_result = trainer.train(resume_from_checkpoint=checkpoint)
+    train_result: TrainOutput = trainer.train(resume_from_checkpoint=checkpoint)
     trainer.save_model()  # Saves the tokenizer too for easy upload
 
     metrics = train_result.metrics
@@ -540,18 +494,8 @@ def setup_trainer(
     raw_datasets = get_datasets(data_args=data_args, model_args=model_args)
 
     # Load pretrained model and tokenizer
-    #
-    # Distributed training:
-    # The .from_pretrained methods guarantee that only one local process can concurrently
-    # download model & vocab.
 
-    tokenizer_kwargs = {
-        "cache_dir": model_args.cache_dir,
-        "use_fast": model_args.use_fast_tokenizer,
-        "revision": model_args.model_revision,
-        "use_auth_token": True if model_args.use_auth_token else None,
-    }
-    tokenizer = _get_tokenizer(model_args=model_args, tokenizer_kwargs=tokenizer_kwargs)
+    tokenizer = _get_tokenizer(model_args=model_args)
 
     # Preprocessing the datasets.
 
@@ -601,8 +545,17 @@ def setup_trainer(
 
     assert train_dataset is not None
 
+    def logging_to_wandb(training_args: TrainingArguments) -> bool:
+        return (
+            wandb is not None
+            and is_main_process()
+            and bool(training_args.report_to)
+            and "wandb" in training_args.report_to
+        )
+
     # note: This isn't working, it's causing it to re-init.
-    if is_main_process():
+    if logging_to_wandb(training_args):
+        assert wandb
         wandb.init(
             project=os.environ.get("WANDB_PROJECT", "mup_debug"),
             name=training_args.run_name,
@@ -613,7 +566,9 @@ def setup_trainer(
             },
             # tags=
         )
-    training_args.report_to = []
+    # Prevent the Trainer from typing to create a wandb callback (we're adding it outselves below).
+    if training_args.report_to and "wandb" in training_args.report_to:
+        training_args.report_to.remove("wandb")
 
     # Initialize our Trainer
     trainer = Trainer(
@@ -628,11 +583,9 @@ def setup_trainer(
         # NOTE: next arg has wrong annotation (should be marked as optional)
         preprocess_logits_for_metrics=preprocess_logits_for_metrics,  # type: ignore
     )
-    # TODO: Potentially initialize wandb manually, to get more fine-grained control over what is
-    # logged.
-    from transformers.integrations import WandbCallback
 
-    if is_main_process():
+    if logging_to_wandb(training_args):
+        assert wandb
         assert wandb.run is not None
         trainer.add_callback(WandbCallback())
     return trainer
@@ -647,36 +600,42 @@ def find_last_checkpoint(training_args: _TrainingArguments) -> str | None:
     ):
         last_checkpoint = get_last_checkpoint(training_args.output_dir)
         # NOTE: This is being a little bit annoying.
-        if last_checkpoint is None and len(os.listdir(training_args.output_dir)) > 0:
-            raise ValueError(
-                f"Output directory ({training_args.output_dir}) already exists and is not empty. "
-                "Use --overwrite_output_dir to overcome."
+        if last_checkpoint is None and len(list(Path(training_args.output_dir).glob("*.bin"))) > 0:
+            logger.warning(
+                RuntimeWarning(
+                    f"Output directory ({training_args.output_dir}) already exists and contains "
+                    "no checkpoints. Overwriting."
+                )
             )
         elif last_checkpoint is not None and training_args.resume_from_checkpoint is None:
             logger.info(
-                f"Checkpoint detected, resuming training at {last_checkpoint}. To avoid this behavior, change "
-                "the `--output_dir` or add `--overwrite_output_dir` to train from scratch."
+                f"Checkpoint detected, resuming training at {last_checkpoint}. To avoid this "
+                f"behavior, change the `--output_dir` or add `--overwrite_output_dir` to train "
+                f"from scratch."
             )
     return last_checkpoint
 
 
 def get_datasets(data_args: DataTrainingArguments, model_args: ModelArguments) -> DatasetDict:
-    # Get the datasets: you can either provide your own CSV/JSON/TXT training and evaluation files (see below)
-    # or just provide the name of one of the public datasets available on the hub at https://huggingface.co/datasets/
-    # (the dataset will be downloaded automatically from the datasets Hub).
-    #
-    # For CSV/JSON files, this script will use the column called 'text' or the first column if no column called
-    # 'text' is found. You can easily tweak this behavior (see below).
-    #
-    # In distributed training, the load_dataset function guarantee that only one local process can concurrently
-    # download the dataset.
+    """Get the datasets.
+
+    You can either provide your own CSV/JSON/TXT training and evaluation files (see below)
+    or just provide the name of one of the public datasets available on the hub at
+    https://huggingface.co/datasets/ (the dataset will be downloaded automatically from the
+    datasets Hub).
+
+    For CSV/JSON files, this script will use the column called 'text' or the first column if no
+    column called 'text' is found. You can easily tweak this behavior (see below).
+
+    In distributed training, the load_dataset function guarantee that only one local process can concurrently
+    download the dataset.
+    """
     if data_args.dataset_name is not None:
         # Downloading and loading a dataset from the hub.
         raw_datasets = load_dataset(
             data_args.dataset_name,
             data_args.dataset_config_name,
-            cache_dir=model_args.cache_dir,
-            use_auth_token=True if model_args.use_auth_token else None,
+            use_auth_token=model_args.use_auth_token,
         )
         assert isinstance(raw_datasets, DatasetDict)
         if "validation" not in raw_datasets.keys():
@@ -684,15 +643,13 @@ def get_datasets(data_args: DataTrainingArguments, model_args: ModelArguments) -
                 data_args.dataset_name,
                 data_args.dataset_config_name,
                 split=f"train[:{data_args.validation_split_percentage}%]",
-                cache_dir=model_args.cache_dir,
-                use_auth_token=True if model_args.use_auth_token else None,
+                use_auth_token=model_args.use_auth_token,
             )
             raw_datasets["train"] = load_dataset(
                 data_args.dataset_name,
                 data_args.dataset_config_name,
                 split=f"train[{data_args.validation_split_percentage}%:]",
-                cache_dir=model_args.cache_dir,
-                use_auth_token=True if model_args.use_auth_token else None,
+                use_auth_token=model_args.use_auth_token,
             )
     else:
         data_files = {}
@@ -712,8 +669,7 @@ def get_datasets(data_args: DataTrainingArguments, model_args: ModelArguments) -
         raw_datasets = load_dataset(
             extension,
             data_files=data_files,
-            cache_dir=model_args.cache_dir,
-            use_auth_token=True if model_args.use_auth_token else None,
+            use_auth_token=model_args.use_auth_token,
             **dataset_args,
         )
         assert isinstance(raw_datasets, DatasetDict)
@@ -725,7 +681,7 @@ def get_datasets(data_args: DataTrainingArguments, model_args: ModelArguments) -
                 data_files=data_files,
                 split=f"train[:{data_args.validation_split_percentage}%]",
                 cache_dir=model_args.cache_dir,
-                use_auth_token=True if model_args.use_auth_token else None,
+                use_auth_token=model_args.use_auth_token,
                 **dataset_args,
             )
             raw_datasets["train"] = load_dataset(
@@ -733,7 +689,7 @@ def get_datasets(data_args: DataTrainingArguments, model_args: ModelArguments) -
                 data_files=data_files,
                 split=f"train[{data_args.validation_split_percentage}%:]",
                 cache_dir=model_args.cache_dir,
-                use_auth_token=True if model_args.use_auth_token else None,
+                use_auth_token=model_args.use_auth_token,
                 **dataset_args,
             )
 
@@ -761,33 +717,31 @@ def _setup_logging(training_args: TrainingArguments):
     )
 
 
-def _get_tokenizer(
-    model_args: ModelArguments, tokenizer_kwargs: dict[str, Any]
-) -> PreTrainedTokenizerBase:
-    if model_args.tokenizer_name:
-        tokenizer = AutoTokenizer.from_pretrained(model_args.tokenizer_name, **tokenizer_kwargs)
-    else:
+def _get_tokenizer(model_args: ModelArguments) -> PreTrainedTokenizerBase:
+    if not model_args.tokenizer_name:
         raise ValueError(
             "You are instantiating a new tokenizer from scratch. This is not supported by this script."
             "You can do it from another script, save it, and load it from here, using --tokenizer_name."
         )
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_args.tokenizer_name,
+        use_fast=model_args.use_fast_tokenizer,
+        revision=model_args.model_revision,
+        use_auth_token=model_args.use_auth_token,
+    )
     return tokenizer
 
 
 def make_model(
     model_args: ModelArguments,
     tokenizer: PreTrainedTokenizerBase,
-) -> PreTrainedModel:
-
-    model: PreTrainedModel
+) -> mutransformers.GPT2LMHeadModel:
+    """Creates the model using the model configuration and the tokenizer."""
     logger.info("Creating a MuP GPT2 model.")
-
-    # NOTE: Hard-coding to GPT2 model for simplicity.
-    # model = AutoModelForCausalLM.from_config(config)
     model = model_args.model.make_model()
 
-    n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
-    logger.info(f"Training new model from scratch - Total size={n_params/2**20:.2f}M params")
+    # NOTE: Compared to `model.num_parameters()` this doesn't count shared parameters twice
+    # (idk if this is useful for GPT2 though).
     n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
     logger.info(f"Model size={n_params/2**20:.2f}M params")
 
@@ -902,11 +856,6 @@ def preprocess_datasets(
             eval_dataset = eval_dataset.select(range(max_eval_samples))
 
     return train_dataset, eval_dataset
-
-
-def _mp_fn(index):
-    # For xla_spawn (TPUs)
-    main()
 
 
 if __name__ == "__main__":

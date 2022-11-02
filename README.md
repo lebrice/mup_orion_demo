@@ -20,67 +20,20 @@ Here is what each file contains:
 ```console
 mup_demo
 ├── model.py              # Model creation functions
-└── utils.py              # Utility functions common to both examples
+├── utils.py              # Utility functions
 ├── train.py              # Training script with HF's Trainer API  (runnable from the CLI)
-├── train_big_model.py    # Fetches the best trial from the sweep, trains scaled-up model.
+└── train_big_model.py    # Fetches the best trial from the sweep, trains scaled-up model.
 ```
 
-## Example commands:
+## Running the example:
 
-### Train a MuP Transformer using HF's Trainer API:
-
+0. Make sure to run `accelerate config` first
 ```console
-accelerate launch mup_demo/trainer_example/train.py \
-    --per_device_train_batch_size 4 --output_dir runs/test_run
+accelerate config
 ```
 
-### Running a sweep with Orion's command-line API:
+1. Tune a small version of a MuP-parametrized GPT2 model:
 
 ```console
-orion hunt -n mup_debug \
-    accelerate launch mup_demo/trainer_example/train.py \
-        --per_device_train_batch_size~"uniform(1,4,discrete=True)" \
-        --output_dir=runs/orion_cli/{exp.name}/{trial.id} \
-        --max_train_samples=100
-```
-
-```console
-orion hunt -n mup_debug --exp-max-trials=5 --working-dir runs \
-    WANDB_LOG_MODEL=1 WANDB_WATCH=all WANDB_PROJECT=mup_demo accelerate launch mup_demo/train.py \
-    --output_dir runs/{exp.name}/{trial.id} --run_name {trial.id} \
-    --learning_rate~"loguniform(1e-7,1e-4)" \
-    --config_name_or_path=small_gpt2_config.json
-
-
-
-```
-
-### Running a sweep with Orion's Python API:
-
-```console
-accelerate launch mup_demo/trainer_example/tune_orion.py \
-    --per_device_train_batch_size 4 \
-    --output_dir=runs/orion_python --max_train_samples=100
-```
-
-### Running a sweep with the HF Trainer API:
-
-```console
-accelerate launch mup_demo/trainer_example/tune_trainer.py \
-    --per_device_train_batch_size 4 --output_dir=runs/trainer_plugin \
-    --max_train_samples=100
-```
-
-## Other examples:
-
-### Train a MuP Transformer for a few epochs on a simple task using HF's Accelerate API:
-
-```console
-accelerate launch mup_demo/manual_example/train.py
-```
-
-### Tune a MuP Transformer on a simple task using HF's Accelerate API:
-
-```console
-accelerate launch mup_demo/manual_example/tune.py
+./run_sweep.sh
 ```

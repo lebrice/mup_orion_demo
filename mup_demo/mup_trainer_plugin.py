@@ -24,15 +24,14 @@ def patch_trainer_for_mup(Trainer=Trainer):
     ) -> tuple[Callable[..., Optimizer], dict]:
         # Use the base class to get the optimizer class and kwargs.
         optimizer_cls, kwargs = _get_optimizer_cls_and_kwargs(args)
-
-        if optimizer_cls is torch.optim.Adam:
+        if optimizer_cls in [mup.MuAdam, mup.MuAdamW, mup.MuSGD]:
+            pass  # do nothing, it's already a MuP optimizer.
+        elif optimizer_cls is torch.optim.Adam:
             optimizer_cls = mup.MuAdam
         elif optimizer_cls in [torch.optim.AdamW, transformers.optimization.AdamW]:
             optimizer_cls = mup.MuAdamW
         elif optimizer_cls is torch.optim.SGD:
             optimizer_cls = mup.MuSGD
-        elif optimizer_cls in [mup.MuAdam, mup.MuAdamW, mup.MuSGD]:
-            pass  # do nothing, it's already a MuP optimizer.
         else:
             raise NotImplementedError(
                 f"To use the MuP Trainer plugin, the optimizer must be one of Adam, AdamW, or "

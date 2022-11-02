@@ -22,7 +22,6 @@ logger = logging.get_logger(__name__)
 M = TypeVar("M", bound=PreTrainedModel)
 
 ConfigType = TypeVar("ConfigType", bound=PretrainedConfig)
-BertModelType = TypeVar("BertModelType", bound=BertPreTrainedModel)
 GPT2ModelType = TypeVar("GPT2ModelType", bound=GPT2LMHeadModel)
 
 
@@ -42,37 +41,6 @@ def temp_change_verbosity(verbosity: int = logging.ERROR):
     logging.set_verbosity(logging.ERROR)
     yield
     logging.set_verbosity(verbosity)
-
-
-def get_bert_model(config: BertConfig, model_type: type[BertModelType]) -> BertModelType:
-    base_config = _replace(
-        config,
-        hidden_size=64,
-        intermediate_size=128,
-        num_attention_heads=4,
-    )
-    delta_config = _replace(
-        config,
-        hidden_size=200,
-        intermediate_size=300,
-        num_attention_heads=5,
-    )
-    # Create the base and delta models using empty weights, so they don't take any memory.
-    with init_empty_weights():
-        base_model = model_type(base_config)
-        delta_model = model_type(delta_config)
-
-    target_model = model_type(config=config)
-
-    base_shapes = make_base_shapes(base_model, delta_model, savefile="bert256.bsh")
-    # set base shapes
-    set_base_shapes(target_model, base_shapes)
-    # re-initialize
-    target_model.apply(target_model._init_weights)
-    print(f"Total parameters in the base model:   {base_model.num_parameters()}")
-    print(f"Total parameters in the delta model:  {delta_model.num_parameters()}")
-    print(f"Total parameters in the target model: {target_model.num_parameters()}")
-    return target_model
 
 
 def get_gpt2_model(
