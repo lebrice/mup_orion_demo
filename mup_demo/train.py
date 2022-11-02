@@ -564,7 +564,7 @@ def setup_trainer(
                 "data": dataclasses.asdict(data_args),
                 "training_args": dataclasses.asdict(training_args),
             },
-            # tags=
+            dir=training_args.output_dir,
         )
     # Prevent the Trainer from typing to create a wandb callback (we're adding it ourselves below).
     # NOTE: can't use other reporting methods because of this line here.

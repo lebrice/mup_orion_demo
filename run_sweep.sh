@@ -19,7 +19,7 @@ orion hunt -n $EXP_NAME --exp-max-trials=50 --working-dir runs/$EXP_NAME \
     --dataset_name=wikitext --dataset_config_name=wikitext-2-raw-v1 \
     --learning_rate~"loguniform(1e-7,1e-2)" \
     --n_embd=256 --n_head=4 --n_layer=2 \
-    --num_train_epochs=3 \
+    --max_steps=5000 \
     --report_to wandb
 
 # accelerate launch mup_demo/train.py \
