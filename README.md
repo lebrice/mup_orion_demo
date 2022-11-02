@@ -32,8 +32,22 @@ mup_demo
 accelerate config
 ```
 
-1. Tune a small version of a MuP-parametrized GPT2 model:
+1. Launch a single training run, just to make sure everything works:
+
+```console
+accelerate launch mup_demo/train.py --n_embd=256 --n_head=4 --n_layer=2 --report_to=none
+```
+
+
+2. Tune a small version of a MuP-parametrized GPT2 model:
 
 ```console
 ./run_sweep.sh
+```
+
+3.  Launch a single training run with the best parameters found by the sweep, overwriting what we
+    want to change from that run:
+
+```console
+accelerate launch mup_demo/train_big_model.py --output_dir=runs/large --n_embd=1024
 ```
