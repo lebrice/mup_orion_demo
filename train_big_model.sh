@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=mup_sweep
+#SBATCH --job-name=mup_large
 #SBATCH --ntasks=1
 #SBATCH --time=24:00:00
 #SBATCH --mem=16G
