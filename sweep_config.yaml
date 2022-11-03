@@ -1,3 +1,10 @@
 database:
   host: /network/scratch/n/normandf/mup/runs/gpt2_256/orion_db.pkl
   type: pickleddb
+
+experiment:
+  algorithms:
+    random:
+      seed: 123
+  max_broken: 20
+  max_trials: 100
