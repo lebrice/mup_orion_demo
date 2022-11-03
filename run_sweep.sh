@@ -8,6 +8,10 @@
 #SBATCH --array=0-10%4
 #SBATCH --output=/network/scratch/n/normandf/mup/logs/slurm-%A_%a.out
 #SBATCH --error=/network/scratch/n/normandf/mup/logs/slurm-%A_%a.err
+export MASTER_PORT=$(expr 10000 + $(echo -n $SLURM_JOBID | tail -c 4))
+export WORLD_SIZE=$(($SLURM_NNODES * $SLURM_NTASKS_PER_NODE))
+export MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
+export OMP_NUM_THREADS=12
 
 module load miniconda/3
 conda activate $SCRATCH/conda/mup
