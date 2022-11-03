@@ -1,12 +1,13 @@
 #!/bin/bash
 #SBATCH --job-name=mup_sweep
 #SBATCH --ntasks=1
-#SBATCH --time=12:00:00
+#SBATCH --time=04:00:00
 #SBATCH --mem=16G
 #SBATCH --gres=gpu:rtx8000:2
 #SBATCH --cpus-per-task=4
-#SBATCH --output=/network/scratch/n/normandf/mup/logs/slurm-%j.out
-#SBATCH --error=/network/scratch/n/normandf/mup/logs/slurm-%j.err
+#SBATCH --array=0-10%4
+#SBATCH --output=/network/scratch/n/normandf/mup/logs/slurm-%A_%a.out
+#SBATCH --error=/network/scratch/n/normandf/mup/logs/slurm-%A_%a.err
 
 module load miniconda/3
 conda activate $SCRATCH/conda/mup
