@@ -545,19 +545,17 @@ def setup_trainer(
 
     assert train_dataset is not None
 
-    def logging_to_wandb(training_args: TrainingArguments) -> bool:
-        return (
-            wandb is not None
-            and is_main_process()
-            and bool(training_args.report_to)
-            and (
-                "all" in training_args.report_to
-                or any(log_backend.endswith("wandb") for log_backend in training_args.report_to)
-            )
+    logging_to_wandb = (
+        wandb is not None
+        and is_main_process()
+        and bool(training_args.report_to)
+        and (
+            "all" in training_args.report_to
+            or any(log_backend.endswith("wandb") for log_backend in training_args.report_to)
         )
+    )
 
-    # note: This isn't working, it's causing it to re-init.
-    if logging_to_wandb(training_args):
+    if logging_to_wandb:
         assert wandb
         wandb.init(
             project=os.environ.get("WANDB_PROJECT", "mup_debug"),
@@ -587,7 +585,7 @@ def setup_trainer(
         preprocess_logits_for_metrics=preprocess_logits_for_metrics,  # type: ignore
     )
 
-    if logging_to_wandb(training_args):
+    if logging_to_wandb:
         assert wandb
         assert wandb.run is not None
         trainer.add_callback(WandbCallback())
