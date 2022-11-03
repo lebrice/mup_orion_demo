@@ -1,0 +1,3 @@
+database:
+  host: /network/scratch/n/normandf/mup/runs/gpt2_256/orion_db.pkl
+  type: pickleddb
