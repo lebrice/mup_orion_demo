@@ -400,7 +400,18 @@ def main():
 
     # NOTE: Removed some Optional Post-run stuff: creating a model card, uploading the model to
     # the hub, etc.
-
+    logging_to_wandb = (
+        wandb is not None
+        and is_main_process()
+        and bool(training_args.report_to)
+        and (
+            "all" in training_args.report_to
+            or any(log_backend.endswith("wandb") for log_backend in training_args.report_to)
+        )
+    )
+    if logging_to_wandb:
+        assert wandb
+        wandb.save(training_args.output_dir + "/**")
     if training_args.do_eval:
         assert metrics is not None
         from orion.client import report_results
