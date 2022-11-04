@@ -20,7 +20,7 @@ export WANDB_WATCH=all
 export WANDB_PROJECT=mup_demo
 export WANDB_TAGS=$EXP_NAME
 
-orion hunt -n $EXP_NAME --config sweep_config.yaml --working-dir runs/$EXP_NAME \
+orion hunt -n $EXP_NAME --config sweep_config.yaml --exp-max-broken=999 --working-dir runs/$EXP_NAME \
     accelerate launch mup_demo/train.py \
     --output_dir {exp.working_dir}/{trial.id} --overwrite_output_dir=True \
     --run_name {exp.name}-{trial.id} \
