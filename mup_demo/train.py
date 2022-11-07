@@ -314,6 +314,7 @@ class Trainer(_Trainer):
         ignore_keys_for_eval=None,
     ):
         # NOTE: Fix a small bug here in the base class:
+        # TODO: Update the wandb config to reflect the new batch size.
         args.per_device_train_batch_size = batch_size
         return super()._inner_training_loop(
             batch_size=batch_size,
