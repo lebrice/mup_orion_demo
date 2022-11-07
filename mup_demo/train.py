@@ -298,7 +298,8 @@ class TrainingArguments(_TrainingArguments):
         self.hub_strategy = _to_str(self.hub_strategy)  # "every_save"
         self.lr_scheduler_type = _to_str(self.lr_scheduler_type)  # "linear"
         self.optim = _to_str(self.optim)  # "adamw_hf"
-
+        if self.sharded_ddp == []:
+            self.sharded_ddp = ""
         super().__post_init__()
 
 

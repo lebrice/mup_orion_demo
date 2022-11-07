@@ -16,13 +16,14 @@ from mup_demo.train import (
     setup_trainer,
     train,
 )
+from mup_demo.utils import load_training_args
 
 
 def get_best_trial_configs(
     experiment_name: str,
 ) -> tuple[ModelArguments, DataTrainingArguments, TrainingArguments]:
-    if trials_are_available_locally(experiment_name):
-        return get_best_trial_configs_orion(experiment_name)
+    # if trials_are_available_locally(experiment_name):
+    #     return get_best_trial_configs_orion(experiment_name)
     return get_best_trial_configs_wandb(experiment_name)
 
 
@@ -50,7 +51,7 @@ def get_best_trial_configs_orion(
 
     model_args = load_yaml(ModelArguments, log_dir / "model_args.yaml")
     data_args = load_yaml(DataTrainingArguments, log_dir / "data_args.yaml")
-    training_args = load_yaml(TrainingArguments, log_dir / "training_args.yaml")
+    training_args = load_training_args(log_dir / "training_args.yaml")
     return model_args, data_args, training_args
 
 

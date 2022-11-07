@@ -1,15 +1,22 @@
+from __future__ import annotations
+
 import contextlib
 import functools
 import os
+import typing
 from dataclasses import fields, replace
 from logging import getLogger as get_logger
+from pathlib import Path
 from typing import Callable, TypeVar, cast
 
+import yaml
 from orion.client import ExperimentClient
 from orion.client.experiment import TrialCM
 from orion.core.worker.trial import Trial
 from typing_extensions import ParamSpec
 
+if typing.TYPE_CHECKING:
+    from mup_demo.train import TrainingArguments
 logger = get_logger(__name__)
 
 
@@ -128,3 +135,41 @@ def replace_fields_of(obj: ConfigType, **kwargs) -> ConfigType:
         )
     things_to_overwrite = {k: v for k, v in kwargs.items() if k in overlapping_fields}
     return replace(obj, **things_to_overwrite)
+
+
+def save_yaml(config, path: Path) -> None:
+    with open(path, "w") as f:
+        yaml.dump(config, f)
+
+
+def load_yaml(path: Path) -> None:
+    with open(path) as f:
+        return yaml.safe_load(f)
+
+
+def load_training_args(path: Path) -> TrainingArguments:
+    from mup_demo.train import TrainingArguments
+
+    with open(path) as f:
+        dict_or_object = yaml.safe_load(f)
+        if isinstance(dict_or_object, dict):
+            dict_or_object.pop("_n_gpu", "")
+            for strategy_field in [
+                "evaluation_strategy",
+                "logging_strategy",
+                "save_strategy",
+                "hub_strategy",
+                "lr_scheduler_type",
+                "optim",
+            ]:
+                if strategy_field not in dict_or_object:
+                    continue
+                v = dict_or_object[strategy_field]
+                if isinstance(v, str):
+                    dict_or_object[strategy_field] = v.lower()
+
+            training_args = TrainingArguments(**dict_or_object)
+        else:
+            assert isinstance(dict_or_object, TrainingArguments)
+            training_args = dict_or_object
+    return training_args
