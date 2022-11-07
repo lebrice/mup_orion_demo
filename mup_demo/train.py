@@ -362,7 +362,13 @@ def parse_args(
 def parse_with_good_defaults() -> tuple[ModelArguments, DataTrainingArguments, TrainingArguments]:
     return parse_args(
         default_model_args=ModelArguments(
-            model=GPT2ConfigArgs(),
+            model=GPT2ConfigArgs(
+                n_embd=256,
+                n_head=4,
+                n_layer=2,
+                readout_zero_init=True,
+                query_zero_init=True,
+            ),
             tokenizer_name="gpt2",
         ),
         default_data_args=DataTrainingArguments(
@@ -371,13 +377,21 @@ def parse_with_good_defaults() -> tuple[ModelArguments, DataTrainingArguments, T
         ),
         default_training_args=TrainingArguments(
             output_dir="runs/debug",
+            overwrite_output_dir=True,
+            load_best_model_at_end=True,
+            metric_for_best_model="eval_loss",
+            evaluation_strategy="steps",
+            save_strategy="steps",
+            logging_steps=500,
+            greater_is_better=False,
             per_device_train_batch_size=4,
             per_device_eval_batch_size=8,
-            auto_find_batch_size=True,
+            auto_find_batch_size=False,
             ddp_find_unused_parameters=False,
             do_train=True,
             do_eval=True,
             num_train_epochs=1,
+            report_to="wandb",
         ),
     )
 
