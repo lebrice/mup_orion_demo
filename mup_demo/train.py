@@ -474,6 +474,20 @@ def train(
     trainer.log_metrics("train", metrics)
     trainer.save_metrics("train", metrics)
     trainer.save_state()
+
+    logging_to_wandb = (
+        wandb is not None
+        and is_main_process()
+        and bool(training_args.report_to)
+        and (
+            "all" in training_args.report_to
+            or any(log_backend.endswith("wandb") for log_backend in training_args.report_to)
+        )
+    )
+    if logging_to_wandb:
+        assert wandb
+        wandb.save(training_args.output_dir + "/**")
+
     return metrics
 
 
