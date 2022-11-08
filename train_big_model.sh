@@ -30,13 +30,7 @@ export WANDB_TAGS=$EXP_NAME
 accelerate launch mup_demo/train.py \
     --output_dir runs/gpt2_1024_5000 --overwrite_output_dir=True \
     --run_name gpt2_1024_5000 \
-    --load_best_model_at_end=True --metric_for_best_model=eval_loss --greater_is_better=False \
-    --evaluation_strategy=steps \
-    --save_strategy=steps \
-    --logging_steps=500 \
     --per_device_train_batch_size=32 --auto_find_batch_size=False \
-    --readout_zero_init=True --query_zero_init=True \
-    --dataset_name=wikitext --dataset_config_name=wikitext-2-raw-v1 \
     --n_embd=1024 --n_head=4 --n_layer=2 \
     --max_steps=5000 \
     --learning_rate=0.0003504 \

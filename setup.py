@@ -1,4 +1,4 @@
-from setuptools import setup, find_namespace_packages, find_packages
+from setuptools import find_packages, setup
 
 package_name = "mup_demo"
 packages = find_packages(where=package_name)
@@ -35,7 +35,6 @@ setup(
         "torchvision",
         "pytorch-lightning==1.6.0",
         "lightning-bolts==0.5",
-        "mila_datamodules @ git+https://www.github.com/lebrice/mila_datamodules.git",
         "simple-parsing",
         "filelock",
         "orion",

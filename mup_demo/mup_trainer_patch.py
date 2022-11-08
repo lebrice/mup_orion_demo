@@ -14,8 +14,8 @@ logger = get_logger(__name__)
 
 
 def patch_trainer_for_mup(Trainer=Trainer):
-    # Patches the `get_optimizer_cls_and_kwargs` staticmethod of the Trainer class to return the
-    # MuP Variants.
+    """Patches the `get_optimizer_cls_and_kwargs` staticmethod of the Trainer class to return the
+    MuP Variants of the SGD, Adam, or AdamW optimizers."""
 
     _get_optimizer_cls_and_kwargs = Trainer.get_optimizer_cls_and_kwargs
 

@@ -4,6 +4,7 @@
 #SBATCH --time=04:00:00
 #SBATCH --mem=16G
 #SBATCH --gres=gpu:rtx8000:2
+#SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4
 #SBATCH --array=0-10%4
 #SBATCH --output=/network/scratch/n/normandf/mup/logs/slurm-%A_%a.out
@@ -35,5 +36,5 @@ orion hunt -n $EXP_NAME --config sweep_config.yaml \
     --run_name {exp.name}-{trial.id} \
     --per_device_train_batch_size=16 --auto_find_batch_size=False \
     --learning_rate~"loguniform(1e-7,1e-1)" \
-    --n_embd=256 --n_head=8 --n_layer=4 \
+    --n_embd=256 --n_head=12 --n_layer=4 \
     --num_train_epochs=3
