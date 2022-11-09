@@ -11,7 +11,9 @@
 
 module load miniconda/3
 conda activate $SCRATCH/conda/mup
-EXP_NAME="gpt2_256"
+# Set the EXP_NAME only if not already set.
+# (For example, it is already set in the sweep script which calls this one.)
+EXP_NAME=${EXP_NAME:="gpt2_256"}
 
 export MASTER_PORT=$(expr 10000 + $(echo -n $SLURM_JOBID | tail -c 4))
 export WORLD_SIZE=$(($SLURM_JOB_NUM_NODES * $SLURM_GPUS_ON_NODE))
