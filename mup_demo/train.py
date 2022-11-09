@@ -428,6 +428,8 @@ def main():
     )
     if logging_to_wandb:
         assert wandb
+        # BUG: Can't seem to be able to get wandb to save EVERYTHING in that directory.
+        wandb.save(training_args.output_dir)
         wandb.save(training_args.output_dir + "/**")
     if training_args.do_eval:
         assert metrics is not None
