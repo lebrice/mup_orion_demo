@@ -19,7 +19,7 @@ https://github.com/huggingface/transformers/blob/main/examples/pytorch/language-
 
 Example command (make sure to run `accelerate config` first):
 ```
-accelerate launch mup_demo/trainer.py \
+accelerate launch mup_demo/train.py \
     --dataset_name wikitext --dataset_config_name wikitext-2-raw-v1 \
     --per_device_train_batch_size 4 --per_device_eval_batch_size 8 \
     --output_dir test_run

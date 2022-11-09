@@ -21,6 +21,6 @@ orion hunt -n $EXP_NAME --config sweep_config.yaml \
     --output_dir {exp.working_dir}/{trial.id} \
     --run_name {exp.name}-{trial.id} \
     --per_device_train_batch_size=256 --auto_find_batch_size=True \
-    --learning_rate~"loguniform(1e-7,1e-1)" \
+    --learning_rate~"loguniform(1e-7,1e-1,default_value=5e-05)" \
     --n_embd=256 --n_head=16 --n_layer=4 \
     --num_train_epochs=10
