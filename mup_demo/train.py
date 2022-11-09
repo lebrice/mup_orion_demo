@@ -314,9 +314,12 @@ class Trainer(_Trainer):
         trial=None,
         ignore_keys_for_eval=None,
     ):
-        # NOTE: Fix a small bug here in the base class:
-        # TODO: Update the wandb config to reflect the new batch size.
+        # NOTE: THis fixes a small bug here in the base class:
         args.per_device_train_batch_size = batch_size
+        if is_main_process():
+            # Update the wandb config to reflect the new batch size.
+            if wandb and wandb.run:
+                wandb.run.config.update({"training_args": dataclasses.asdict(args)})
         return super()._inner_training_loop(
             batch_size=batch_size,
             args=args,
@@ -617,6 +620,7 @@ def setup_trainer(
             },
             # TODO: Unsure about this one here.
             # dir=training_args.output_dir,
+            allow_val_change=True,
         )
         wandb.save(training_args.output_dir + "/**")
     # Prevent the Trainer from typing to create a wandb callback (we're adding it ourselves below).
