@@ -17,7 +17,7 @@ EXP_NAME="gpt2_256_4"
 
 orion hunt -n $EXP_NAME --config sweep_config.yaml \
     --exp-max-broken=999 --exp-max-trials=1000 --working-dir runs/$EXP_NAME \
-    ./train.sh
+    ./train.sh \
     --output_dir {exp.working_dir}/{trial.id} \
     --run_name {exp.name}-{trial.id} \
     --per_device_train_batch_size=256 --auto_find_batch_size=True \
