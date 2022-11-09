@@ -29,10 +29,8 @@ echo "SLURM_CPUS_ON_NODE: $SLURM_CPUS_ON_NODE"
 export WANDB_PROJECT=mup_demo
 export WANDB_TAGS=$EXP_NAME
 
-
-echo "Running mup_demo/train.py $@"
-# Actually start experiment. NUM_GPUS is an environment variable set in trigger script
-#torchrun --node_rank $SLURM_NODEID --nnodes $SLURM_JOB_NUM_NODES --nproc_per_node=$SLURM_GPUS_ON_NODE --standalone mup_demo/train.py "$@"
+#torchrun --node_rank $SLURM_NODEID --nnodes $SLURM_JOB_NUM_NODES \
+#    --nproc_per_node=$SLURM_GPUS_ON_NODE --standalone mup_demo/train.py "$@"
 
 accelerate launch \
      --main_process_ip $MASTER_ADDR --main_process_port $MASTER_PORT \

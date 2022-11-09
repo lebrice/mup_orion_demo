@@ -8,3 +8,15 @@ experiment:
       seed: 123
   max_broken: 20
   max_trials: 100
+
+evc:
+  enable: True
+  algorithm_change: False
+  auto_resolution: True
+  cli_change_type: break
+  code_change_type: break
+  config_change_type: break
+  orion_version_change: False
+  ignore_code_changes: False
+  manual_resolution: False
+  non_monitored_arguments: []
