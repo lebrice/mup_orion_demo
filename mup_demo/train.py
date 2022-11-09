@@ -319,15 +319,22 @@ class Trainer(_Trainer):
         if is_main_process():
             # Update the wandb config to reflect the new batch size.
             if wandb and wandb.run:
-                # TODO: There's a duplicate, non-nested entry for "per-device_train_batch_size".
-                # It probably gets set by the `WandbCallback`.
                 wandb.config.update(
                     {
                         "training_args": dataclasses.asdict(args),
-                        "per_device_train_batch_size": batch_size,
                     },
                     allow_val_change=True,
                 )
+                # TODO: There's a duplicate, non-nested entry for "per-device_train_batch_size".
+                # It probably gets set by the `WandbCallback`. Only update it if it's already present.
+                if "per_device_train_batch_size" in wandb.config:
+                    wandb.config.update(
+                        {
+                            "per_device_train_batch_size": batch_size,
+                        },
+                        allow_val_change=True,
+                    )
+
         return super()._inner_training_loop(
             batch_size=batch_size,
             args=args,
@@ -431,23 +438,6 @@ def main():
     if not is_main_process():
         return metrics
 
-    logging_to_wandb = (
-        wandb is not None
-        and bool(training_args.report_to)
-        and (
-            "all" in training_args.report_to
-            or any(log_backend.endswith("wandb") for log_backend in training_args.report_to)
-        )
-    )
-    if logging_to_wandb:
-        assert wandb
-        # BUG: Can't seem to be able to get wandb to save EVERYTHING in that directory.
-        wandb.save(training_args.output_dir)
-        wandb.save(training_args.output_dir + "/**")
-        for directory in Path(training_args.output_dir).glob("*"):
-            if directory.is_dir():
-                wandb.save(str(directory))
-
     if training_args.do_eval:
         assert metrics is not None
         from orion.client import report_results
@@ -504,8 +494,15 @@ def train(
         )
     )
     if logging_to_wandb:
+        # TODO: Having trouble getting wandb to save the checkpoint folders in the output dir!
         assert wandb
-        wandb.save(training_args.output_dir + "/**")
+        wandb.save(training_args.output_dir + "/**", base_path=training_args.output_dir)
+        wandb.save(
+            training_args.output_dir + "/checkpoint-*/**", base_path=training_args.output_dir
+        )
+        for subdir in Path(training_args.output_dir).iterdir():
+            if subdir.is_dir():
+                wandb.save(str(subdir), base_path=training_args.output_dir)
 
     return metrics
 
