@@ -319,7 +319,15 @@ class Trainer(_Trainer):
         if is_main_process():
             # Update the wandb config to reflect the new batch size.
             if wandb and wandb.run:
-                wandb.config.update(training_args=dataclasses.asdict(args), allow_val_change=True)
+                # TODO: There's a duplicate, non-nested entry for "per-device_train_batch_size".
+                # It probably gets set by the `WandbCallback`.
+                wandb.config.update(
+                    {
+                        "training_args": dataclasses.asdict(args),
+                        "per_device_train_batch_size": batch_size,
+                    },
+                    allow_val_change=True,
+                )
         return super()._inner_training_loop(
             batch_size=batch_size,
             args=args,
