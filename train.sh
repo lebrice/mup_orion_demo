@@ -3,7 +3,7 @@
 #SBATCH --ntasks=1
 #SBATCH --time=24:00:00
 #SBATCH --mem=16G
-#SBATCH --gres=gpu:rtx8000:2
+#SBATCH --gres=gpu:2
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4
 #SBATCH --output=/network/scratch/n/normandf/mup/logs/slurm-%j.out
@@ -34,7 +34,7 @@ dataset_name="wikitext"
 datasets_dir="${HF_DATASETS_CACHE:-$SCRATCH/cache/huggingface/datasets}"
 export HF_DATASETS_CACHE="$SLURM_TMPDIR/cache/huggingface/datasets"
 mkdir -p $HF_DATASETS_CACHE
-cp -r --verbose $datasets_dir/$dataset_name $HF_DATASETS_CACHE
+cp -r $datasets_dir/$dataset_name $HF_DATASETS_CACHE
 
 # Optional: Set some wandb-related environment variables.
 #export WANDB_LOG_MODEL=1
@@ -42,12 +42,15 @@ cp -r --verbose $datasets_dir/$dataset_name $HF_DATASETS_CACHE
 export WANDB_PROJECT=mup_demo
 export WANDB_TAGS=$EXP_NAME
 
-# NOTE: Could get something basically identical with torchrun directly.
+# NOTE: Could get pretty much identical behaviour with torchrun directly.
 #torchrun --node_rank $SLURM_NODEID --nnodes $SLURM_JOB_NUM_NODES \
 #    --nproc_per_node=$SLURM_GPUS_ON_NODE --standalone mup_demo/train.py "$@"
+
+# NOTE: Could be replaced by `mup_demo/train_big_model.py`
+training_script=${training_script:="mup_demo/train.py"}
 
 accelerate launch \
      --main_process_ip $MASTER_ADDR --main_process_port $MASTER_PORT \
      --num_processes $WORLD_SIZE --num_cpu_threads_per_process=$SLURM_CPUS_ON_NODE \
      --num_machines $SLURM_NNODES --machine_rank=$SLURM_NODEID \
-     mup_demo/train.py "$@"
+     $training_script "$@"

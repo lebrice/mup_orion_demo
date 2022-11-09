@@ -28,10 +28,10 @@ export WANDB_TAGS=$EXP_NAME
 #     --max_steps=5000
 
 accelerate launch mup_demo/train.py \
-    --output_dir runs/gpt2_1024_5000 --overwrite_output_dir=True \
+    --output_dir runs/gpt2_1024_5000 \
     --run_name gpt2_1024_5000 \
     --per_device_train_batch_size=32 --auto_find_batch_size=False \
-    --n_embd=1024 --n_head=4 --n_layer=2 \
+    --n_embd=1024 --n_head=16 --n_layer=4 \
     --max_steps=5000 \
     --learning_rate=0.0003504 \
     --report_to=wandb

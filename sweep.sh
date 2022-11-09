@@ -13,7 +13,9 @@
 module load miniconda/3
 conda activate $SCRATCH/conda/mup
 
-EXP_NAME="gpt2_256_4"
+export EXP_NAME=${EXP_NAME:-"gpt2_256_4"}
+
+echo "Starting sweep with name $EXP_NAME"
 
 orion hunt -n $EXP_NAME --config sweep_config.yaml \
     --exp-max-broken=999 --exp-max-trials=1000 --working-dir runs/$EXP_NAME \

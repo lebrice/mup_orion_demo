@@ -1,9 +1,10 @@
+"""Training script similar to `train.py` but which uses the best hparams as defaults."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Iterable
 
-import orion
 from orion.client import get_experiment
 from orion.core.worker.trial import Trial
 from simple_parsing.helpers.serialization.serializable import load_yaml
@@ -22,15 +23,17 @@ from mup_demo.utils import load_training_args
 def get_best_trial_configs(
     experiment_name: str,
 ) -> tuple[ModelArguments, DataTrainingArguments, TrainingArguments]:
-    # if trials_are_available_locally(experiment_name):
-    #     return get_best_trial_configs_orion(experiment_name)
+    if trials_are_available_locally(experiment_name):
+        return get_best_trial_configs_orion(experiment_name)
     return get_best_trial_configs_wandb(experiment_name)
 
 
 def trials_are_available_locally(experiment_name: str, min_trials: int = 25) -> bool:
+    from orion.core.utils.exceptions import NoConfigurationError
+
     try:
         experiment = get_experiment(experiment_name)
-    except orion.core.utils.exceptions.NoConfigurationError:
+    except NoConfigurationError:
         return False
     return len(experiment.fetch_trials_by_status("completed")) > min_trials
 
@@ -91,7 +94,7 @@ def get_best_trial_configs_wandb(
 
 
 def main():
-    experiment_name = "gpt2_256"
+    experiment_name = os.environ.get("EXP_NAME", "gpt2_256")
     model_args, data_args, training_args = get_best_trial_configs(experiment_name)
 
     # Overwrite the entries that we want to change:

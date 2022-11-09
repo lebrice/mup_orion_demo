@@ -319,9 +319,7 @@ class Trainer(_Trainer):
         if is_main_process():
             # Update the wandb config to reflect the new batch size.
             if wandb and wandb.run:
-                wandb.run.config["training_args"].update(
-                    per_device_train_batch_size=batch_size, allow_val_change=True
-                )
+                wandb.config.update(training_args=dataclasses.asdict(args), allow_val_change=True)
         return super()._inner_training_loop(
             batch_size=batch_size,
             args=args,
@@ -616,7 +614,7 @@ def setup_trainer(
     if logging_to_wandb:
         assert wandb
         wandb.init(
-            project=os.environ.get("WANDB_PROJECT", "mup_debug"),
+            project=os.environ.get("WANDB_PROJECT", "mup_demo"),
             name=training_args.run_name,
             config={
                 "model": dataclasses.asdict(model_args),
