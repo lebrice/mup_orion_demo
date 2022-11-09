@@ -624,6 +624,8 @@ def setup_trainer(
         wandb.init(
             project=os.environ.get("WANDB_PROJECT", "mup_demo"),
             name=training_args.run_name,
+            # TODO: Perhaps we could use the Trial ID of Orion to identify the wandb run?
+            # id=os.environ.get("ORION_TRIAL_ID"),
             config={
                 "model": dataclasses.asdict(model_args),
                 "data": dataclasses.asdict(data_args),
