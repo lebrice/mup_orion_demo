@@ -16,7 +16,7 @@ conda activate $SCRATCH/conda/mup
 EXP_NAME=${EXP_NAME:="gpt2_256"}
 
 export MASTER_PORT=$(expr 10000 + $(echo -n $SLURM_JOBID | tail -c 4))
-export WORLD_SIZE=$(($SLURM_JOB_NUM_NODES * $SLURM_GPUS_ON_NODE))
+export WORLD_SIZE=$((${SLURM_JOB_NUM_NODES:=1} * $SLURM_GPUS_ON_NODE))
 export MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
 export OMP_NUM_THREADS=$SLURM_CPUS_ON_NODE
 
@@ -25,12 +25,24 @@ echo "MASTER_PORT: $MASTER_PORT"
 echo "WORLD_SIZE: $WORLD_SIZE"
 echo "NODE RANK: $SLURM_NODEID"
 echo "SLURM_CPUS_ON_NODE: $SLURM_CPUS_ON_NODE"
+
+# Copy the datasets from its source location (usually in ~/.cache/huggingface/datasets or in
+# $SCRATCH) over to SLURM_TMPDIR.
+
+echo "Copying datasets to the local fast SLURM_TMPDIR directory: $SLURM_TMPDIR"
+dataset_name="wikitext"
+datasets_dir="${HF_DATASETS_CACHE:-$SCRATCH/cache/huggingface/datasets}"
+export HF_DATASETS_CACHE="$SLURM_TMPDIR/cache/huggingface/datasets"
+mkdir -p $HF_DATASETS_CACHE
+cp -r --verbose $datasets_dir/$dataset_name $HF_DATASETS_CACHE
+
 # Optional: Set some wandb-related environment variables.
 #export WANDB_LOG_MODEL=1
 #export WANDB_WATCH=all
 export WANDB_PROJECT=mup_demo
 export WANDB_TAGS=$EXP_NAME
 
+# NOTE: Could get something basically identical with torchrun directly.
 #torchrun --node_rank $SLURM_NODEID --nnodes $SLURM_JOB_NUM_NODES \
 #    --nproc_per_node=$SLURM_GPUS_ON_NODE --standalone mup_demo/train.py "$@"
 

@@ -20,5 +20,5 @@ evc:
   config_change_type: break
   orion_version_change: False
   ignore_code_changes: False
-  manual_resolution: False
+  manual_resolution: True
   non_monitored_arguments: []
