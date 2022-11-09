@@ -444,6 +444,9 @@ def main():
         # BUG: Can't seem to be able to get wandb to save EVERYTHING in that directory.
         wandb.save(training_args.output_dir)
         wandb.save(training_args.output_dir + "/**")
+        for directory in Path(training_args.output_dir).glob("*"):
+            if directory.is_dir():
+                wandb.save(str(directory))
 
     if training_args.do_eval:
         assert metrics is not None
