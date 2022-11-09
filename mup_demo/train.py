@@ -645,7 +645,7 @@ def setup_trainer(
             # TODO: Unsure about this one here.
             # dir=training_args.output_dir,
             allow_val_change=True,
-            resume=True,
+            resume="allow",
         )
         if wandb.run and wandb.run.resumed:
             logger.critical("RUN IS BEING RESUMED!")
