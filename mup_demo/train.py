@@ -621,11 +621,22 @@ def setup_trainer(
 
     if logging_to_wandb:
         assert wandb
+
+        run_id = None
+        if "ORION_EXPERIMENT_NAME" in os.environ:
+            # Create the run id from the Orion info:
+            run_id = (
+                os.environ["ORION_EXPERIMENT_NAME"]
+                + "_"
+                + os.environ["ORION_EXPERIMENT_VERSION"]
+                + "_"
+                + os.environ["ORION_TRIAL_ID"]
+            )
         wandb.init(
             project=os.environ.get("WANDB_PROJECT", "mup_demo"),
             name=training_args.run_name,
             # TODO: Perhaps we could use the Trial ID of Orion to identify the wandb run?
-            # id=os.environ.get("ORION_TRIAL_ID"),
+            id=run_id,
             config={
                 "model": dataclasses.asdict(model_args),
                 "data": dataclasses.asdict(data_args),
@@ -634,8 +645,12 @@ def setup_trainer(
             # TODO: Unsure about this one here.
             # dir=training_args.output_dir,
             allow_val_change=True,
+            resume=True,
         )
+        if wandb.run and wandb.run.resumed:
+            logger.critical("RUN IS BEING RESUMED!")
         wandb.save(training_args.output_dir + "/**")
+
     # Prevent the Trainer from typing to create a wandb callback (we're adding it ourselves below).
     # NOTE: can't use other reporting methods because of this line here.
     training_args.report_to = []
