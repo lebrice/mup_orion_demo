@@ -1,13 +1,15 @@
-database:
-  host: runs/gpt2_256/orion_db.pkl
-  type: pickleddb
+storage:
+  type: legacy
+  database:
+    type: pickleddb
+    host: orion_db.pkl
 
 experiment:
   algorithms:
     random:
       seed: 123
-  max_broken: 20
-  max_trials: 100
+  max_broken: 999
+  max_trials: 1000
 
 evc:
   enable: True
