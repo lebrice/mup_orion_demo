@@ -34,7 +34,7 @@ dataset_name="wikitext"
 datasets_dir="${HF_DATASETS_CACHE:-$SCRATCH/cache/huggingface/datasets}"
 export HF_DATASETS_CACHE="$SLURM_TMPDIR/cache/huggingface/datasets"
 mkdir -p $HF_DATASETS_CACHE
-cp -r $datasets_dir/$dataset_name $HF_DATASETS_CACHE
+rsync -r --update $datasets_dir/$dataset_name $HF_DATASETS_CACHE
 
 # Optional: Set some wandb-related environment variables.
 #export WANDB_LOG_MODEL=1
