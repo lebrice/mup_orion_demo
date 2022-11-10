@@ -1,17 +1,3 @@
-#!/usr/bin/env python
-# Copyright 2020 The HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 """Trains a GPT2 model with MuP parametrization on a causal language modeling task.
 
 Adapted from a HuggingFace language modeling example:
@@ -280,13 +266,12 @@ class DataTrainingArguments:
 
 @dataclass
 class TrainingArguments(_TrainingArguments):
-    """TrainingArguments is the subset of the arguments we use in our example scripts **which
-    relate to the training loop itself**."""
+    """The subset of arguments which relate to the training loop."""
 
     def __post_init__(self):
         # NOTE: Little temporary patch so these fields (which have a `Enum | str` annotation) are
         # parsed properly.
-        # BUG: Fix a bug that occurs with ExplicitEnum, where it parses it by name into
+        # BUG: A bug that occurs with ExplicitEnum, where it parses it by name into
         # a 'IntervalStrategy.NO' string, rather than into the 'IntervalStrategy.NO' enum value!
         def _to_str(v: ExplicitEnum | str) -> str:
             if "." in v:

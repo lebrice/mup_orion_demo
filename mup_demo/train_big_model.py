@@ -78,8 +78,8 @@ def get_best_trial_configs_wandb(
     model_args_file: File = best_run.file("model_args.yaml")
     data_args_file: File = best_run.file("data_args.yaml")
     training_args_file: File = best_run.file("training_args.yaml")
+    # BUG: Getting an error here.
     file = model_args_file.download(root=str(log_dir), replace=True)
-    # FIXME: debugging stuff.
     assert False, file.read()
 
     model_args_file.download(str(log_dir))
