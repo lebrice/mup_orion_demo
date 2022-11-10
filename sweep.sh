@@ -26,4 +26,4 @@ orion hunt -n $EXP_NAME --config sweep_config.yaml \
     --learning_rate~"loguniform(1e-7,1e-1,default_value=5e-05)" \
     --n_embd~"choices(128,256,512,1024,2048,4096)" --n_head=2 --n_layer=2 \
     --lr_scheduler_type="constant" \
-    --max_steps=10_000 --block_size=256 \
+    --max_steps=10_000 --block_size=256 --save_steps=2500
