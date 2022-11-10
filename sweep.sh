@@ -6,7 +6,7 @@
 #SBATCH --gres=gpu:rtx8000:2
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4
-#SBATCH --array=0-10%4
+#SBATCH --array=0-20
 #SBATCH --output=/network/scratch/n/normandf/mup/logs/slurm-%A_%a.out
 #SBATCH --error=/network/scratch/n/normandf/mup/logs/slurm-%A_%a.err
 
