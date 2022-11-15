@@ -44,7 +44,7 @@ accelerate launch mup_demo/train.py --n_embd=256 --n_head=4 --n_layer=2 --report
 3. Tune a small version of a MuP-parametrized GPT2 model:
 
 ```console
-./run_sweep.sh
+./sweep.sh
 ```
 
 4. Launch a single training run with the best parameters found by the sweep, overwriting what we
