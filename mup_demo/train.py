@@ -567,7 +567,7 @@ def setup_trainer(
                 logits = logits[0]
             return logits.argmax(dim=-1)
 
-        metric = evaluate.load("accuracy")
+        metric = evaluate.load("accuracy", experiment_id=training_args.run_name)
 
         def _compute_metrics(eval_preds: EvalPrediction) -> dict:
             preds, labels = eval_preds
