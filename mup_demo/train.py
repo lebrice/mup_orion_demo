@@ -13,7 +13,6 @@ accelerate launch mup_demo/train.py \
 """
 from __future__ import annotations
 
-import contextlib
 import dataclasses
 import functools
 import logging
@@ -580,11 +579,8 @@ def setup_trainer(
             labels = labels[:, 1:].reshape(-1)
             preds = preds[:, :-1].reshape(-1)
             metrics = {}
-            # BUG: Getting a weird FileNotFoundError: [Errno 2] No such file or directory:
-            # '/network/scratch/n/normandf/cache/huggingface/metrics/accuracy/default/default_experiment-1-0.arrow'
-            with contextlib.suppress(FileNotFoundError):
-                # metric.add_batch(predictions=preds, references=labels)
-                metrics = metric.compute(predictions=preds, references=labels)
+            # BUG: Was getting a weird FileNotFoundError: [Errno 2] No such file or directory
+            metrics = metric.compute(predictions=preds, references=labels)
 
             assert isinstance(metrics, dict)
             return metrics
