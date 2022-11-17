@@ -37,7 +37,7 @@ echo "SLURM_CPUS_ON_NODE: $SLURM_CPUS_ON_NODE"
 
 # Optional: Set some wandb-related environment variables.
 #export WANDB_LOG_MODEL=1
-#export WANDB_WATCH=all
+export WANDB_WATCH=false
 export WANDB_PROJECT=mup_demo
 export WANDB_TAGS=$EXP_NAME
 
