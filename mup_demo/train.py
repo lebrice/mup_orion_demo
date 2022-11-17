@@ -825,6 +825,8 @@ def preprocess_datasets(
     data_args: DataTrainingArguments,
     training_args: TrainingArguments,
 ) -> tuple[Dataset | None, Dataset | None]:
+    shared_fs_between_nodes = False
+    keep_in_memory = True
 
     # First we tokenize all the texts.
     if training_args.do_train:
@@ -847,13 +849,16 @@ def preprocess_datasets(
             )
         return output
 
-    with training_args.main_process_first(desc="dataset map tokenization"):
+    with training_args.main_process_first(
+        desc="dataset map tokenization", local=not shared_fs_between_nodes
+    ):
         tokenized_datasets = raw_datasets.map(
             tokenize_function,
             batched=True,
             num_proc=data_args.preprocessing_num_workers,
             remove_columns=column_names,
             load_from_cache_file=not data_args.overwrite_cache,
+            keep_in_memory=False,
             desc="Running tokenizer on dataset",
         )
 
@@ -897,14 +902,22 @@ def preprocess_datasets(
     # To speed up this part, we use multiprocessing. See the documentation of the map method for more information:
     # https://huggingface.co/docs/datasets/package_reference/main_classes.html#datasets.Dataset.map
 
-    with training_args.main_process_first(desc="grouping texts together"):
-        lm_datasets = tokenized_datasets.map(
-            group_texts,
-            batched=True,
-            num_proc=data_args.preprocessing_num_workers,
-            load_from_cache_file=not data_args.overwrite_cache,
-            desc=f"Grouping texts in chunks of {block_size}",
-        )
+    with training_args.main_process_first(
+        desc="grouping texts together", local=not shared_fs_between_nodes
+    ):
+        # NOTE: This is how you can keep the dataset in memory, while also saving/loading from a cache file!
+        save_path = Path(os.environ["SLURM_TMPDIR"]) / "temp"
+        if training_args.local_process_index == 0:
+            lm_datasets = tokenized_datasets.map(
+                group_texts,
+                batched=True,
+                num_proc=data_args.preprocessing_num_workers,
+                load_from_cache_file=not data_args.overwrite_cache,
+                desc=f"Grouping texts in chunks of {block_size}",
+                keep_in_memory=False,
+            )
+            lm_datasets.save_to_disk(str(save_path))
+        lm_datasets = DatasetDict.load_from_disk(str(save_path), keep_in_memory=keep_in_memory)
 
     train_dataset: Dataset | datasets.arrow_dataset.Dataset | None = None
     eval_dataset: Dataset | datasets.arrow_dataset.Dataset | None = None

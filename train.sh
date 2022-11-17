@@ -26,15 +26,14 @@ echo "WORLD_SIZE: $WORLD_SIZE"
 echo "NODE RANK: $SLURM_NODEID"
 echo "SLURM_CPUS_ON_NODE: $SLURM_CPUS_ON_NODE"
 
-# Copy the datasets from its source location (usually in ~/.cache/huggingface/datasets or in
-# $SCRATCH) over to SLURM_TMPDIR.
 
-echo "Copying datasets to the local fast SLURM_TMPDIR directory: $SLURM_TMPDIR"
-dataset_name="wikitext"
-datasets_dir="${HF_DATASETS_CACHE:-$SCRATCH/cache/huggingface/datasets}"
-export HF_DATASETS_CACHE="$SLURM_TMPDIR/cache/huggingface/datasets"
-mkdir -p $HF_DATASETS_CACHE
-rsync -r --update $datasets_dir/$dataset_name $HF_DATASETS_CACHE
+# NOTE: Setting this environment variable to a non-zero value makes all call to DatasetDict.map
+# ignore the cache files, which isn't what we want. Therefore, we manually use `save_to_disk` and
+# `load_from_disk`.
+# export HF_DATASETS_IN_MEMORY_MAX_SIZE=$(free -b | grep Mem | awk '{print $2}')
+
+# NOTE: No need to copy the datasets manually from SCRATCH to SLURM_TMPDIR anymore, thanks to the
+# save/load_from_disk stuff that's mentioned above!
 
 # Optional: Set some wandb-related environment variables.
 #export WANDB_LOG_MODEL=1
