@@ -15,7 +15,7 @@ experiment:
   max_trials: 1000
 
 evc:
-  enable: True
+  enable: False
   algorithm_change: False
   auto_resolution: True
   cli_change_type: break
