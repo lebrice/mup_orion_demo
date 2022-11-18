@@ -4,7 +4,7 @@ storage:
     type: pickleddb
     # TODO: Would be nice to be able to interpolate the experiment working dir in here:
     # host: runs/{exp.working_dir}/orion_db.pkl
-    host: runs/gpt2_wikitext103/orion_db.pkl
+    host: runs/gpt2_wikitext103_long/orion_db.pkl
     timeout: 300
 
 experiment:
@@ -24,4 +24,4 @@ evc:
   orion_version_change: False
   ignore_code_changes: False
   manual_resolution: True
-  non_monitored_arguments: []
+  non_monitored_arguments: [output_dir, run_name]

@@ -13,7 +13,7 @@
 module load miniconda/3
 conda activate $SCRATCH/conda/mup
 
-export EXP_NAME=${EXP_NAME:-"gpt2_wikitext103"}
+export EXP_NAME=${EXP_NAME:-"gpt2_wikitext103_long"}
 
 echo "Starting sweep with name $EXP_NAME"
 
@@ -23,8 +23,8 @@ orion hunt -n $EXP_NAME --config sweep_config.yaml \
     --output_dir {exp.working_dir}/{trial.id} \
     --run_name {exp.name}-{trial.id} \
     --dataset_name wikitext --dataset_config_name wikitext-103-raw-v1 \
-    --per_device_train_batch_size=20 --auto_find_batch_size=False \
+    --per_device_train_batch_size=128 --auto_find_batch_size=False \
     --learning_rate~"loguniform(1e-7,1e-1,default_value=5e-05)" \
     --n_embd~"choices(128,256,512,1024,2048,4096)" --n_head=2 --n_layer=2 \
     --lr_scheduler_type="constant" \
-    --max_steps=10_000 --block_size=256 --save_steps=2500
+    --num_train_epochs=10 --block_size=256 --save_steps=1000
