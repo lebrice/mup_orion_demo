@@ -13,6 +13,8 @@ experiment:
       seed: 123
   max_broken: 999
   max_trials: 1000
+  worker:
+    reservation_timeout: 300
 
 evc:
   enable: False
