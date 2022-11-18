@@ -36,10 +36,8 @@ from simple_parsing.helpers.serialization.serializable import save_yaml
 from torch import Tensor
 from torch.utils.data import Dataset
 from transformers import (
-    MODEL_FOR_CAUSAL_LM_MAPPING,
     AutoTokenizer,
     EvalPrediction,
-    PretrainedConfig,
     PreTrainedModel,
     PreTrainedTokenizerBase,
 )
@@ -65,19 +63,6 @@ logger = get_logger(__name__)
 
 # Apply the 'patch' to the Trainer class so it uses the mup optimizers.
 patch_trainer_for_mup()
-
-# TODO: Could try to add the mup-variants in these lists here. There's an issue where the config
-# files get parsed into the GPT2Config from HF rather than the GPT2Config from mutransformers.
-
-MODEL_CONFIG_CLASSES: list[type[PretrainedConfig]] = list(MODEL_FOR_CAUSAL_LM_MAPPING.keys())  # type: ignore
-MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
-# NOTE: Not sure this does anything..
-MODEL_FOR_CAUSAL_LM_MAPPING[transformers.GPT2Config] = mutransformers.GPT2LMHeadModel
-# assert False, MODEL_CONFIG_CLASSES
-# assert False, MODEL_FOR_CAUSAL_LM_MAPPING[transformers.GPT2Config]
-
-
-# TODO: Replace these ModelArguments with a dataclass version of the GPT2Config?
 
 
 @dataclass
@@ -268,7 +253,7 @@ class TrainingArguments(_TrainingArguments):
     """The subset of arguments which relate to the training loop."""
 
     def __post_init__(self):
-        # NOTE: Little temporary patch so these fields (which have a `Enum | str` annotation) are
+        # NOTE: Little temporary patch so these fields (which have a `str | Enum` annotation) are
         # parsed properly.
         # BUG: A bug that occurs with ExplicitEnum, where it parses it by name into
         # a 'IntervalStrategy.NO' string, rather than into the 'IntervalStrategy.NO' enum value!
@@ -301,7 +286,7 @@ class Trainer(_Trainer):
         # NOTE: THis fixes a small bug here in the base class:
         args.per_device_train_batch_size = batch_size
         if is_main_process():
-            # Update the wandb config to reflect the new batch size.
+            # Also update the wandb config to reflect the batch size that is actually used.
             if wandb and wandb.run:
                 wandb.config.update(
                     {
