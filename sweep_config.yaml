@@ -14,6 +14,7 @@ experiment:
   max_broken: 999
   max_trials: 1000
   worker:
+    idle_timeout: 300
     reservation_timeout: 300
 
 evc:
