@@ -18,7 +18,7 @@ export EXP_NAME=${EXP_NAME:-"gpt2_wikitext103_long"}
 echo "Starting sweep with name $EXP_NAME"
 
 orion hunt -n $EXP_NAME --config sweep_config.yaml \
-    --exp-max-broken=999 --exp-max-trials=1000 --working-dir runs/$EXP_NAME --idle_timeout=300 --reservation_timeout=300 \
+    --exp-max-broken=999 --exp-max-trials=1000 --working-dir runs/$EXP_NAME --idle-timeout=300 --reservation-timeout=300 \
     ./train.sh \
     --output_dir {exp.working_dir}/{trial.id} \
     --run_name {exp.name}-{trial.id} \
