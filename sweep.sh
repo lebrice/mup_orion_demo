@@ -23,7 +23,7 @@ orion hunt -n $EXP_NAME --config sweep_config.yaml \
     --output_dir {exp.working_dir}/{trial.id} \
     --run_name {exp.name}-{trial.id} \
     --dataset_name wikitext --dataset_config_name wikitext-103-raw-v1 \
-    --per_device_train_batch_size=128 --auto_find_batch_size=False \
+    --per_device_train_batch_size=20 --auto_find_batch_size=False \
     --learning_rate~"loguniform(1e-4,1e-2,default_value=5e-04)" \
     --n_embd~"choices(128,256,512,1024,2048,4096)" --n_head=8 --n_layer=4 \
     --lr_scheduler_type="constant" \
